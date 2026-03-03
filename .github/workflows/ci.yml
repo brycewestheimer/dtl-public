@@ -1,0 +1,364 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop, 'release/**', 'alpha/**']
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  release-metadata:
+    name: Release Metadata Consistency
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate release metadata
+        run: python scripts/check_release_metadata.py
+
+  examples-smoke:
+    name: Examples Smoke (CPU+MPI subset)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            openmpi-bin \
+            libopenmpi-dev
+
+      - name: Build and run examples smoke subset
+        run: |
+          bash scripts/run_examples_smoke.sh
+
+  host-only-fallback:
+    name: Host-only fallback build
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            gcc-13 g++-13 \
+            gfortran \
+            libgtest-dev
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=gcc-13 \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DDTL_BUILD_TESTS=ON \
+            -DDTL_BUILD_C_BINDINGS=ON \
+            -DDTL_BUILD_FORTRAN=OFF \
+            -DDTL_BUILD_EXAMPLES=ON \
+            -DDTL_ENABLE_MPI=OFF
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --timeout 120
+
+  build:
+    name: ${{ matrix.compiler }} / ${{ matrix.build_type }} / MPI=${{ matrix.mpi }}
+    runs-on: ubuntu-24.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # GCC 11+ and Clang 15+ required for <source_location> support
+        compiler: [gcc-11, gcc-12, gcc-13, clang-15, clang-17]
+        build_type: [Debug, Release]
+        mpi: [ON, OFF]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            openmpi-bin \
+            libopenmpi-dev \
+            libgtest-dev
+
+      - name: Install GCC 11
+        if: matrix.compiler == 'gcc-11'
+        run: |
+          sudo apt-get install -y gcc-11 g++-11
+          echo "CC=gcc-11" >> $GITHUB_ENV
+          echo "CXX=g++-11" >> $GITHUB_ENV
+
+      - name: Install GCC 12
+        if: matrix.compiler == 'gcc-12'
+        run: |
+          sudo apt-get install -y gcc-12 g++-12
+          echo "CC=gcc-12" >> $GITHUB_ENV
+          echo "CXX=g++-12" >> $GITHUB_ENV
+
+      - name: Install GCC 13
+        if: matrix.compiler == 'gcc-13'
+        run: |
+          sudo apt-get install -y gcc-13 g++-13
+          echo "CC=gcc-13" >> $GITHUB_ENV
+          echo "CXX=g++-13" >> $GITHUB_ENV
+
+      - name: Install Clang 15
+        if: matrix.compiler == 'clang-15'
+        run: |
+          sudo apt-get install -y clang-15
+          echo "CC=clang-15" >> $GITHUB_ENV
+          echo "CXX=clang++-15" >> $GITHUB_ENV
+
+      - name: Install Clang 17
+        if: matrix.compiler == 'clang-17'
+        run: |
+          sudo apt-get install -y clang-17
+          echo "CC=clang-17" >> $GITHUB_ENV
+          echo "CXX=clang++-17" >> $GITHUB_ENV
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DCMAKE_C_COMPILER=${{ env.CC }} \
+            -DCMAKE_CXX_COMPILER=${{ env.CXX }} \
+            -DDTL_BUILD_TESTS=ON \
+            -DDTL_ENABLE_MPI=${{ matrix.mpi }} \
+            -DDTL_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --timeout 120
+
+  # ---------------------------------------------------------------------------
+  # AddressSanitizer (ASan) Job
+  # ---------------------------------------------------------------------------
+  asan:
+    name: ASan / gcc-13 / Debug
+    runs-on: ubuntu-24.04
+
+    env:
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:print_stats=1:check_initialization_order=1:detect_stack_use_after_return=1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            gcc-13 g++-13 \
+            libgtest-dev
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=gcc-13 \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address -fno-omit-frame-pointer" \
+            -DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address" \
+            -DDTL_BUILD_TESTS=ON \
+            -DDTL_ENABLE_MPI=OFF
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --timeout 300
+
+  # ---------------------------------------------------------------------------
+  # ThreadSanitizer (TSan) Job
+  # ---------------------------------------------------------------------------
+  tsan:
+    name: TSan / gcc-13 / Debug
+    runs-on: ubuntu-24.04
+
+    env:
+      TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1:history_size=4
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            gcc-13 g++-13 \
+            libgtest-dev
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=gcc-13 \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DCMAKE_CXX_FLAGS="-fsanitize=thread" \
+            -DCMAKE_C_FLAGS="-fsanitize=thread" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=thread" \
+            -DDTL_BUILD_TESTS=ON \
+            -DDTL_ENABLE_MPI=OFF
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --timeout 300
+
+  # ---------------------------------------------------------------------------
+  # C Bindings Job
+  # ---------------------------------------------------------------------------
+  c-bindings:
+    name: C Bindings / gcc-13 / Release
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            gcc-13 g++-13 \
+            libgtest-dev \
+            openmpi-bin \
+            libopenmpi-dev
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=gcc-13 \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DDTL_BUILD_TESTS=ON \
+            -DDTL_BUILD_C_BINDINGS=ON \
+            -DDTL_ENABLE_MPI=ON
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --timeout 120
+
+  # ---------------------------------------------------------------------------
+  # Python Bindings Job
+  # ---------------------------------------------------------------------------
+  python-bindings:
+    name: Python Bindings / gcc-13 / Release
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            gcc-13 g++-13 \
+            libgtest-dev \
+            openmpi-bin \
+            libopenmpi-dev \
+            python3-dev \
+            python3-pip \
+            python3-numpy \
+            pybind11-dev
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=gcc-13 \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DDTL_BUILD_TESTS=ON \
+            -DDTL_BUILD_PYTHON=ON \
+            -DDTL_ENABLE_MPI=ON
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Test
+        run: |
+          cd build
+          python3 -m pytest ../bindings/python/tests -v --tb=short
+
+  # ---------------------------------------------------------------------------
+  # Fortran Bindings Job
+  # ---------------------------------------------------------------------------
+  fortran-bindings:
+    name: Fortran Bindings / gcc-13 / Release
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            gcc-13 g++-13 gfortran-13 \
+            libgtest-dev \
+            openmpi-bin \
+            libopenmpi-dev
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=gcc-13 \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DCMAKE_Fortran_COMPILER=gfortran-13 \
+            -DDTL_BUILD_TESTS=ON \
+            -DDTL_BUILD_C_BINDINGS=ON \
+            -DDTL_BUILD_FORTRAN=ON \
+            -DDTL_ENABLE_MPI=ON
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --timeout 120

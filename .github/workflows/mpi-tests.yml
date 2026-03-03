@@ -1,0 +1,79 @@
+name: MPI Tests
+
+on:
+  push:
+    branches: [main, develop, 'release/**', 'alpha/**']
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  mpi-multi-rank:
+    name: MPI Multi-Rank Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            openmpi-bin \
+            libopenmpi-dev \
+            libgtest-dev
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDTL_BUILD_TESTS=ON \
+            -DDTL_BUILD_INTEGRATION_TESTS=ON \
+            -DDTL_ENABLE_MPI=ON
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Determine MPI rank counts for hosted runner
+        id: mpi_ranks
+        run: |
+          cores=$(nproc)
+          two_rank=2
+          if [ "$cores" -lt 2 ]; then
+            two_rank=1
+          fi
+
+          # Hosted runners are CPU-limited; default to 2 ranks.
+          # Allow opt-in override via workflow env if needed.
+          multi_rank=${DTL_CI_MPI_MAX_RANKS:-2}
+          if [ "$multi_rank" -lt 2 ]; then
+            multi_rank=2
+          fi
+          if [ "$multi_rank" -gt "$cores" ]; then
+            multi_rank="$cores"
+          fi
+          if [ "$multi_rank" -lt 2 ]; then
+            multi_rank=2
+          fi
+
+          echo "two_rank=$two_rank" >> "$GITHUB_OUTPUT"
+          echo "multi_rank=$multi_rank" >> "$GITHUB_OUTPUT"
+
+      - name: Run MPI tests (2 ranks)
+        timeout-minutes: 10
+        run: |
+          mpirun --oversubscribe --bind-to none -np ${{ steps.mpi_ranks.outputs.two_rank }} ./build/tests/dtl_unit_tests
+
+      - name: Run MPI tests (runner-constrained multi-rank)
+        if: steps.mpi_ranks.outputs.multi_rank != steps.mpi_ranks.outputs.two_rank
+        timeout-minutes: 10
+        run: |
+          mpirun --oversubscribe --bind-to none -np ${{ steps.mpi_ranks.outputs.multi_rank }} ./build/tests/dtl_unit_tests
+
+      - name: Run integration tests (2 ranks via ctest)
+        timeout-minutes: 10
+        run: |
+          cd build && ctest -L integration --output-on-failure --timeout 120

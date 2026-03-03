@@ -1,0 +1,92 @@
+# =============================================================================
+# DTL Format Check Workflow
+# =============================================================================
+# Enforces clang-format compliance on all C++ headers.
+# Fails if any files are not properly formatted.
+# =============================================================================
+
+name: Format Check
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - 'release/**'
+      - 'alpha/**'
+    paths:
+      - 'include/**/*.hpp'
+      - 'include/**/*.h'
+      - 'backends/**/*.hpp'
+      - 'backends/**/*.h'
+      - '.clang-format'
+      - '.github/workflows/format-check.yml'
+
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'include/**/*.hpp'
+      - 'include/**/*.h'
+      - 'backends/**/*.hpp'
+      - 'backends/**/*.h'
+      - '.clang-format'
+      - '.github/workflows/format-check.yml'
+
+jobs:
+  format-check:
+    name: clang-format Check
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format-18
+          # Verify installation
+          clang-format-18 --version
+
+      - name: Check format (include/)
+        run: |
+          echo "Checking formatting in include/ directory..."
+          find include/ \( -name "*.hpp" -o -name "*.h" \) -print0 | \
+            xargs -0 -r clang-format-18 --dry-run --Werror
+
+      - name: Check format (backends/)
+        run: |
+          echo "Checking formatting in backends/ directory..."
+          if [ -d "backends/" ]; then
+            find backends/ \( -name "*.hpp" -o -name "*.h" \) -print0 | \
+              xargs -0 -r clang-format-18 --dry-run --Werror
+          else
+            echo "No backends/ directory found, skipping."
+          fi
+
+      - name: Report success
+        if: success()
+        run: |
+          echo "All files are properly formatted!"
+
+      - name: Report failure
+        if: failure()
+        run: |
+          echo "=========================================="
+          echo "Format check failed!"
+          echo "=========================================="
+          echo ""
+          echo "Some files are not properly formatted."
+          echo "Please run the following command locally:"
+          echo ""
+          echo "  ./scripts/format_code.sh"
+          echo ""
+          echo "Or manually format specific files:"
+          echo ""
+          echo "  clang-format -i <file>"
+          echo ""
+          echo "Then commit the changes."
+          echo "=========================================="

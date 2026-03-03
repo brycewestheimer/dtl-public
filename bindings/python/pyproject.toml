@@ -1,0 +1,168 @@
+[build-system]
+requires = [
+    "scikit-build-core>=0.5",
+    "pybind11>=2.11",
+    "numpy>=1.20",
+]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "dtl"
+version = "0.1.0a1"
+description = "Python bindings for DTL (Distributed Template Library)"
+readme = "README.md"
+license = { text = "BSD-3-Clause" }
+authors = [
+    { name = "Bryce M. Westheimer" }
+]
+keywords = [
+    "distributed computing",
+    "parallel computing",
+    "MPI",
+    "HPC",
+    "high-performance computing",
+    "tensors",
+    "arrays",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: System :: Distributed Computing",
+    "Typing :: Typed",
+]
+requires-python = ">=3.8"
+dependencies = [
+    "numpy>=1.20",
+]
+
+[project.optional-dependencies]
+mpi = [
+    "mpi4py>=3.0",
+]
+cuda = [
+    "cupy>=10.0",
+]
+test = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+dev = [
+    "dtl[test]",
+    "mypy>=1.0",
+    "black>=23.0",
+    "isort>=5.0",
+    "ruff>=0.1",
+]
+docs = [
+    "sphinx>=5.0",
+    "sphinx-rtd-theme>=1.0",
+    "myst-parser>=1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/brycewestheimer/dtl-public"
+Documentation = "https://dtl.readthedocs.io"
+Repository = "https://github.com/brycewestheimer/dtl-public"
+Issues = "https://github.com/brycewestheimer/dtl-public/issues"
+Changelog = "https://github.com/brycewestheimer/dtl-public/blob/main/CHANGELOG.md"
+
+[tool.scikit-build]
+cmake.minimum-version = "3.20"
+cmake.build-type = "Release"
+wheel.packages = ["src/dtl"]
+wheel.install-dir = "dtl"
+build-dir = "build/{wheel_tag}"
+
+[tool.scikit-build.cmake.define]
+DTL_BUILD_PYTHON = "ON"
+DTL_BUILD_C_BINDINGS = "ON"
+DTL_BUILD_TESTS = "OFF"
+DTL_BUILD_EXAMPLES = "OFF"
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+addopts = [
+    "-ra",
+    "-q",
+    "--strict-markers",
+]
+markers = [
+    "mpi: tests requiring MPI (deselect with '-m \"not mpi\"')",
+    "cuda: tests requiring CUDA (deselect with '-m \"not cuda\"')",
+    "slow: slow tests (deselect with '-m \"not slow\"')",
+]
+
+[tool.coverage.run]
+source = ["dtl"]
+branch = true
+parallel = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+strict_equality = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+files = ["src/dtl"]
+
+[[tool.mypy.overrides]]
+module = [
+    "mpi4py.*",
+    "numpy.*",
+    "cupy.*",
+]
+ignore_missing_imports = true
+
+[tool.black]
+line-length = 88
+target-version = ["py38", "py39", "py310", "py311", "py312"]
+
+[tool.isort]
+profile = "black"
+line_length = 88
+known_first_party = ["dtl"]
+
+[tool.ruff]
+target-version = "py38"
+line-length = 88
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by black)
+]
+
+[tool.ruff.isort]
+known-first-party = ["dtl"]

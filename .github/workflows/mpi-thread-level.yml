@@ -1,0 +1,103 @@
+name: MPI Thread Level Tests
+
+on:
+  push:
+    branches: [main, develop, 'release/**', 'alpha/**']
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  mpi-thread-level:
+    name: MPI Thread Level ${{ matrix.thread_level }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        thread_level: [SINGLE, FUNNELED, SERIALIZED, MULTIPLE]
+        include:
+          - thread_level: SINGLE
+            mpi_level: 0
+            description: "Only main thread makes MPI calls"
+          - thread_level: FUNNELED
+            mpi_level: 1
+            description: "All MPI calls from main thread only"
+          - thread_level: SERIALIZED
+            mpi_level: 2
+            description: "MPI calls serialized (one at a time)"
+          - thread_level: MULTIPLE
+            mpi_level: 3
+            description: "Full multithreaded MPI support"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            openmpi-bin \
+            libopenmpi-dev \
+            libgtest-dev
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDTL_BUILD_TESTS=ON \
+            -DDTL_ENABLE_MPI=ON \
+            -DCMAKE_CXX_FLAGS="-DDTL_MPI_THREAD_LEVEL=${{ matrix.mpi_level }}"
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Determine MPI rank counts for hosted runner
+        id: mpi_ranks
+        run: |
+          cores=$(nproc)
+          two_rank=2
+          if [ "$cores" -lt 2 ]; then
+            two_rank=1
+          fi
+
+          multi_rank=${DTL_CI_MPI_MAX_RANKS:-2}
+          if [ "$multi_rank" -lt 2 ]; then
+            multi_rank=2
+          fi
+          if [ "$multi_rank" -gt "$cores" ]; then
+            multi_rank="$cores"
+          fi
+          if [ "$multi_rank" -lt 2 ]; then
+            multi_rank=2
+          fi
+
+          echo "two_rank=$two_rank" >> "$GITHUB_OUTPUT"
+          echo "multi_rank=$multi_rank" >> "$GITHUB_OUTPUT"
+
+      - name: Test (single rank)
+        run: |
+          echo "Testing with MPI_THREAD_${{ matrix.thread_level }} (${{ matrix.description }})"
+          ctest --test-dir build --output-on-failure --timeout 120
+
+      - name: Test (2 ranks)
+        timeout-minutes: 10
+        env:
+          OMPI_MCA_mpi_yield_when_idle: 1
+          DTL_MPI_THREAD_LEVEL: ${{ matrix.mpi_level }}
+        run: |
+          echo "Testing with MPI_THREAD_${{ matrix.thread_level }} - 2 ranks"
+          mpirun --oversubscribe --bind-to none -np ${{ steps.mpi_ranks.outputs.two_rank }} ./build/tests/dtl_unit_tests
+
+      - name: Test (runner-constrained multi-rank)
+        if: steps.mpi_ranks.outputs.multi_rank != steps.mpi_ranks.outputs.two_rank
+        timeout-minutes: 10
+        env:
+          OMPI_MCA_mpi_yield_when_idle: 1
+          DTL_MPI_THREAD_LEVEL: ${{ matrix.mpi_level }}
+        run: |
+          echo "Testing with MPI_THREAD_${{ matrix.thread_level }} - ${{ steps.mpi_ranks.outputs.multi_rank }} ranks"
+          mpirun --oversubscribe --bind-to none -np ${{ steps.mpi_ranks.outputs.multi_rank }} ./build/tests/dtl_unit_tests

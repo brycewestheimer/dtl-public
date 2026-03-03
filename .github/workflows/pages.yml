@@ -1,0 +1,58 @@
+# Copyright (c) 2026 Bryce M. Westheimer
+# SPDX-License-Identifier: BSD-3-Clause
+
+name: Deploy Documentation
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y doxygen graphviz
+          pip install -r docs/requirements.txt
+
+      - name: Configure CMake (docs only)
+        run: |
+          cmake -S . -B build \
+            -DDTL_BUILD_DOCS=ON \
+            -DDTL_ENABLE_MPI=OFF \
+            -DDTL_BUILD_TESTS=OFF \
+            -DDTL_BUILD_EXAMPLES=OFF \
+            -DDTL_BUILD_BENCHMARKS=OFF
+
+      - name: Build documentation
+        run: cmake --build build --target docs -j4
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/docs/html
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

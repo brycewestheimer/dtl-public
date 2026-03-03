@@ -1,0 +1,74 @@
+# Build directories
+build/
+build-examples/
+build-*/
+build_*/
+cmake-build-*/
+out/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.claude/
+CLAUDE.md
+
+# Compiled files
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+
+# CMake generated
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!cmake/*.cmake
+!backends/nccl/FindNCCL.cmake
+
+# Testing artifacts
+Testing/
+CTestTestfile.cmake
+DartConfiguration.tcl
+
+# Package files
+*.tar.gz
+*.zip
+
+# Documentation build
+docs/_build/
+docs/html/
+docs/latex/
+docs/_generated/
+docs/api_reference/html/
+docs/api_reference/xml/
+/api_reference/
+
+# macOS
+.DS_Store
+
+# Coverage
+*.gcov
+*.gcda
+*.gcno
+coverage/
+
+# pycache
+*__pycache__*
+*.pyc
+.pytest_cache/
+.local_files/
+
+# VS Code workspace files
+.vscode/*
+*settings.json*
+
+# Archived files and folders
+.archive/*

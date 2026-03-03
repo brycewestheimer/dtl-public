@@ -1,0 +1,12 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/include
+
+Name: DTL
+Description: C++20 Distributed Template Library for distributed and heterogeneous computing
+URL: https://github.com/brycewestheimer/dtl-public
+Version: @DTL_VERSION_FULL@
+
+Cflags: -I${includedir}
+Libs: -L${libdir} -ldtl_runtime
+Requires:

@@ -1,0 +1,70 @@
+name: Coverage
+
+on:
+  push:
+    branches: [main, develop, 'release/**', 'alpha/**']
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  coverage:
+    name: GCC Coverage (CPU)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            gcc-13 g++-13 \
+            libgtest-dev \
+            lcov \
+            python3-pip
+          python3 -m pip install --upgrade pip
+          python3 -m pip install gcovr
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=gcc-13 \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DDTL_BUILD_TESTS=ON \
+            -DDTL_ENABLE_MPI=OFF \
+            -DDTL_ENABLE_COVERAGE=ON
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --timeout 180
+
+      - name: Coverage summary (lcov)
+        run: cmake --build build --target coverage-summary
+
+      - name: Generate coverage reports
+        run: |
+          mkdir -p coverage
+          gcovr \
+            --root . \
+            --exclude 'build/.*' \
+            --exclude 'tests/.*' \
+            --exclude 'examples/.*' \
+            --xml-pretty \
+            --output coverage/coverage.xml \
+            --html-details coverage/coverage.html \
+            --print-summary \
+            --fail-under-line 80
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 30

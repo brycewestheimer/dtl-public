@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using this metadata."
+title: "Distributed Template Library (DTL)"
+type: software
+version: "0.1.0-alpha.1"
+date-released: 2026-02-27
+license: BSD-3-Clause
+authors:
+  - given-names: "Bryce M."
+    family-names: "Westheimer"
+repository-code: "https://github.com/brycewestheimer/dtl-public"
+url: "https://github.com/brycewestheimer/dtl-public"
+abstract: "Alpha pre-release of the Distributed Template Library for distributed and heterogeneous computing."
+keywords:
+  - distributed computing
+  - high-performance computing
+  - parallel algorithms
+  - C++20

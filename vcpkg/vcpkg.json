@@ -1,0 +1,86 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "dtl",
+  "version": "0.1.0-alpha.1",
+  "description": "C++20 header-first template library for distributed and heterogeneous computing with STL-inspired abstractions",
+  "homepage": "https://github.com/brycewestheimer/dtl-public",
+  "license": "BSD-3-Clause",
+  "supports": "!uwp & !arm",
+  "dependencies": [
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ],
+  "default-features": [
+    "mpi"
+  ],
+  "features": {
+    "mpi": {
+      "description": "Enable MPI backend for distributed computing",
+      "dependencies": [
+        "mpi"
+      ]
+    },
+    "cuda": {
+      "description": "Enable CUDA backend for NVIDIA GPUs",
+      "dependencies": [
+        "cuda"
+      ]
+    },
+    "nccl": {
+      "description": "Enable NCCL communicator for GPU collectives",
+      "dependencies": [
+        {
+          "name": "dtl",
+          "default-features": false,
+          "features": [
+            "cuda"
+          ]
+        }
+      ]
+    },
+    "shmem": {
+      "description": "Enable OpenSHMEM backend"
+    },
+    "python": {
+      "description": "Build Python bindings with NumPy zero-copy integration",
+      "dependencies": [
+        "pybind11"
+      ]
+    },
+    "c-bindings": {
+      "description": "Build C ABI bindings (libdtl_c)"
+    },
+    "cereal": {
+      "description": "Enable Cereal serialization adapter",
+      "dependencies": [
+        "cereal"
+      ]
+    },
+    "boost-serialization": {
+      "description": "Enable Boost.Serialization adapter",
+      "dependencies": [
+        {
+          "name": "boost-serialization"
+        }
+      ]
+    },
+    "tests": {
+      "description": "Build unit test suite",
+      "dependencies": [
+        "gtest"
+      ]
+    },
+    "benchmarks": {
+      "description": "Build performance benchmarks",
+      "dependencies": [
+        "benchmark"
+      ]
+    }
+  }
+}

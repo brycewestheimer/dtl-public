@@ -1,0 +1,76 @@
+name: NCCL Tests
+
+on:
+  push:
+    branches: [main, develop, 'release/**', 'alpha/**']
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  nccl-enabled:
+    name: NCCL Enabled (Compile-Only)
+    runs-on: ubuntu-latest
+    container: nvidia/cuda:12.6.0-devel-ubuntu24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y \
+            cmake \
+            ninja-build \
+            openmpi-bin \
+            libopenmpi-dev \
+            libnccl2 \
+            libnccl-dev \
+            libgtest-dev
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDTL_ENABLE_CUDA=ON \
+            -DDTL_ENABLE_NCCL=ON \
+            -DDTL_ENABLE_MPI=ON \
+            -DDTL_BUILD_TESTS=ON
+
+      - name: Build (compile-only verification)
+        run: cmake --build build -j$(nproc)
+        # Note: Tests cannot run - no GPU available at runtime in CI
+
+  nccl-disabled:
+    name: NCCL Disabled (Graceful Degradation)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            openmpi-bin \
+            libopenmpi-dev \
+            libgtest-dev
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDTL_ENABLE_NCCL=OFF \
+            -DDTL_ENABLE_MPI=ON \
+            -DDTL_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Test (non-NCCL code paths)
+        run: ctest --test-dir build --output-on-failure --timeout 120

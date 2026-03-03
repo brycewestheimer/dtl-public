@@ -1,0 +1,185 @@
+name: Performance Benchmarks
+
+on:
+  schedule:
+    # Nightly at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      baseline_update:
+        description: 'Update baseline with these results'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+jobs:
+  benchmark:
+    name: Run Benchmarks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            openmpi-bin \
+            libopenmpi-dev \
+            libbenchmark-dev \
+            jq
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDTL_BUILD_BENCHMARKS=ON \
+            -DDTL_ENABLE_MPI=ON
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Create results directory
+        run: mkdir -p benchmark_results
+
+      - name: Run benchmarks
+        run: |
+          # Run all benchmark executables and collect results
+          for bench in build/benchmarks/*_bench build/benchmarks/**/*_bench; do
+            if [ -x "$bench" ] && [ -f "$bench" ]; then
+              name=$(basename "$bench" _bench)
+              echo "Running benchmark: $name"
+              "$bench" \
+                --benchmark_format=json \
+                --benchmark_out="benchmark_results/${name}.json" \
+                --benchmark_repetitions=3 \
+                --benchmark_report_aggregates_only=true \
+                || echo "Benchmark $name failed or no benchmarks found"
+            fi
+          done
+
+          # Also try running a single unified benchmark if it exists
+          if [ -x "build/benchmarks/dtl_benchmarks" ]; then
+            echo "Running unified benchmarks"
+            ./build/benchmarks/dtl_benchmarks \
+              --benchmark_format=json \
+              --benchmark_out=benchmark_results/dtl_benchmarks.json \
+              --benchmark_repetitions=3 \
+              --benchmark_report_aggregates_only=true \
+              || echo "Unified benchmark failed"
+          fi
+
+      - name: Merge benchmark results
+        run: |
+          # Combine all JSON results into a single file
+          echo '{"benchmarks": []}' > benchmark_results/combined.json
+          for f in benchmark_results/*.json; do
+            if [ "$f" != "benchmark_results/combined.json" ] && [ -f "$f" ]; then
+              # Extract benchmarks array and merge
+              jq -s '.[0].benchmarks + (.[1].benchmarks // []) | {benchmarks: .}' \
+                benchmark_results/combined.json "$f" > benchmark_results/tmp.json \
+                && mv benchmark_results/tmp.json benchmark_results/combined.json
+            fi
+          done
+
+      - name: Download baseline (if exists)
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: benchmark-baseline
+          path: benchmark_baseline/
+
+      - name: Compare against baseline
+        run: |
+          if [ -f "benchmark_baseline/baseline.json" ]; then
+            echo "Comparing against baseline..."
+
+            # Simple comparison script
+            python3 << 'EOF'
+          import json
+          import sys
+
+          REGRESSION_THRESHOLD = 0.10  # 10% regression threshold
+
+          try:
+              with open('benchmark_baseline/baseline.json') as f:
+                  baseline = json.load(f)
+              with open('benchmark_results/combined.json') as f:
+                  current = json.load(f)
+          except (FileNotFoundError, json.JSONDecodeError) as e:
+              print(f"Could not load benchmark files: {e}")
+              sys.exit(0)
+
+          # Build lookup from baseline
+          baseline_lookup = {}
+          for b in baseline.get('benchmarks', []):
+              name = b.get('name', '')
+              if 'real_time' in b:
+                  baseline_lookup[name] = b['real_time']
+
+          regressions = []
+          improvements = []
+
+          for b in current.get('benchmarks', []):
+              name = b.get('name', '')
+              current_time = b.get('real_time', 0)
+
+              if name in baseline_lookup and baseline_lookup[name] > 0:
+                  baseline_time = baseline_lookup[name]
+                  change = (current_time - baseline_time) / baseline_time
+
+                  if change > REGRESSION_THRESHOLD:
+                      regressions.append({
+                          'name': name,
+                          'baseline': baseline_time,
+                          'current': current_time,
+                          'change': change * 100
+                      })
+                  elif change < -REGRESSION_THRESHOLD:
+                      improvements.append({
+                          'name': name,
+                          'baseline': baseline_time,
+                          'current': current_time,
+                          'change': change * 100
+                      })
+
+          if improvements:
+              print("\n=== IMPROVEMENTS (> 10% faster) ===")
+              for item in improvements:
+                  print(f"  {item['name']}: {item['change']:.1f}% faster")
+
+          if regressions:
+              print("\n=== REGRESSIONS (> 10% slower) ===")
+              for item in regressions:
+                  print(f"  WARNING: {item['name']}: {item['change']:.1f}% slower")
+              print(f"\nFound {len(regressions)} regression(s) exceeding {REGRESSION_THRESHOLD*100}% threshold")
+              # Don't fail the workflow, just warn
+          else:
+              print("\nNo significant regressions detected.")
+          EOF
+          else
+            echo "No baseline found. This run will establish the baseline."
+          fi
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ github.run_number }}
+          path: benchmark_results/
+          retention-days: 30
+
+      - name: Update baseline
+        if: github.event.inputs.baseline_update == 'true' || (github.event_name == 'schedule' && success())
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-baseline
+          path: benchmark_results/combined.json
+          retention-days: 90
+          overwrite: true
