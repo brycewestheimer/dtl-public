@@ -12,6 +12,7 @@
 #include <dtl/core/config.hpp>
 #include <dtl/core/types.hpp>
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 
