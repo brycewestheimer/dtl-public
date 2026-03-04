@@ -11,6 +11,7 @@
 
 #include <dtl/core/config.hpp>
 
+#include <cstdint>
 #include <type_traits>
 
 namespace dtl {
