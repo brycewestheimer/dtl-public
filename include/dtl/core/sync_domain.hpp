@@ -15,6 +15,7 @@
 
 #include <atomic>
 #include <bitset>
+#include <cstdint>
 #include <stdexcept>
 #include <type_traits>
 
