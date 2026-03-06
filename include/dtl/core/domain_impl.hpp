@@ -370,6 +370,24 @@ inline result<nccl_domain> nccl_domain::from_mpi(const mpi_domain& mpi, int devi
 #endif  // DTL_ENABLE_CUDA && DTL_ENABLE_MPI
 }
 
+inline result<std::pair<mpi_domain, nccl_domain>>
+nccl_domain::split(const mpi_domain& mpi, int color, int device_id, int key) {
+    // Step 1: Split the MPI communicator
+    auto mpi_split = mpi.split(color, key);
+    if (!mpi_split) {
+        return result<std::pair<mpi_domain, nccl_domain>>::failure(mpi_split.error());
+    }
+
+    // Step 2: Create new NCCL domain from the split MPI sub-communicator
+    auto nccl_result = nccl_domain::from_mpi(*mpi_split, device_id);
+    if (!nccl_result) {
+        return result<std::pair<mpi_domain, nccl_domain>>::failure(nccl_result.error());
+    }
+
+    return result<std::pair<mpi_domain, nccl_domain>>::success(
+        std::make_pair(std::move(*mpi_split), std::move(*nccl_result)));
+}
+
 #endif  // DTL_ENABLE_NCCL
 
 }  // namespace dtl

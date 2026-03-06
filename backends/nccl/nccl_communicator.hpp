@@ -945,6 +945,50 @@ public:
     }
 
     // ------------------------------------------------------------------------
+    // Logical Reductions (emulated via integer min/max)
+    // ------------------------------------------------------------------------
+
+    /// @brief Allreduce with logical AND (emulated via ncclMin on int)
+    /// @details Expects int buffers with values 0 or 1.
+    ///          land(a, b) == min(a, b) when a, b in {0, 1}.
+    result<void> allreduce_land_impl(const void* sendbuf, void* recvbuf,
+                                      size_type count) {
+#if defined(DTL_ENABLE_NCCL)
+        ncclResult_t res = ncclAllReduce(sendbuf, recvbuf, count,
+                                          ncclInt32, ncclMin, comm_, stream_);
+        if (res != ncclSuccess) {
+            return make_error<void>(status_code::reduce_failed,
+                                   "ncclAllReduce (land via min, int) failed");
+        }
+        return {};
+#else
+        (void)sendbuf; (void)recvbuf; (void)count;
+        return make_error<void>(status_code::not_supported,
+                               "NCCL support not enabled");
+#endif
+    }
+
+    /// @brief Allreduce with logical OR (emulated via ncclMax on int)
+    /// @details Expects int buffers with values 0 or 1.
+    ///          lor(a, b) == max(a, b) when a, b in {0, 1}.
+    result<void> allreduce_lor_impl(const void* sendbuf, void* recvbuf,
+                                     size_type count) {
+#if defined(DTL_ENABLE_NCCL)
+        ncclResult_t res = ncclAllReduce(sendbuf, recvbuf, count,
+                                          ncclInt32, ncclMax, comm_, stream_);
+        if (res != ncclSuccess) {
+            return make_error<void>(status_code::reduce_failed,
+                                   "ncclAllReduce (lor via max, int) failed");
+        }
+        return {};
+#else
+        (void)sendbuf; (void)recvbuf; (void)count;
+        return make_error<void>(status_code::not_supported,
+                               "NCCL support not enabled");
+#endif
+    }
+
+    // ------------------------------------------------------------------------
     // Variable-Size Collectives (gatherv, scatterv, allgatherv, alltoallv)
     // ------------------------------------------------------------------------
 

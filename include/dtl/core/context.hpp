@@ -385,6 +385,37 @@ public:
                                          std::make_tuple(std::move(*nccl_result)))));
     }
 
+    /// @brief Split both MPI and NCCL domains to create new sub-group context
+    /// @param color Color for grouping (ranks with same color in same group)
+    /// @param device_id CUDA device ID for this rank in the new NCCL communicator
+    /// @param key Ordering key within color group (default 0)
+    /// @return Result containing new context with split MPI and NCCL domains
+    /// @pre has_mpi() && has_nccl() must be true
+    [[nodiscard]] result<context> split_nccl(int color, int device_id, int key = 0) const
+        requires (has_mpi() && has_nccl())
+    {
+        auto split_result = nccl_domain::split(
+            std::get<mpi_domain>(domains_), color, device_id, key);
+        if (!split_result) {
+            return result<context>::failure(split_result.error());
+        }
+
+        auto& [new_mpi, new_nccl] = *split_result;
+        auto new_domains = replace_domain<mpi_domain>(std::move(new_mpi));
+        auto final_domains = std::apply([&new_nccl](auto&&... ds) {
+            return std::make_tuple(
+                [&new_nccl]<typename T>(T&& d) {
+                    if constexpr (std::is_same_v<std::decay_t<T>, nccl_domain>) {
+                        return std::move(new_nccl);
+                    } else {
+                        return std::forward<T>(d);
+                    }
+                }(std::forward<decltype(ds)>(ds))...
+            );
+        }, std::move(new_domains));
+        return result<context>::success(context(std::move(final_domains)));
+    }
+
     /// @brief Add CPU domain to create new context (if not already present)
     [[nodiscard]] auto with_cpu() const {
         if constexpr (has_cpu()) {

@@ -73,3 +73,6 @@ coverage/
 
 # Archived files and folders
 .archive/*
+
+# Local development artifacts
+REVIEW.md

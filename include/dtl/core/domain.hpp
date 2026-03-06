@@ -15,6 +15,7 @@
 
 #include <memory>
 #include <type_traits>
+#include <utility>
 
 #if DTL_ENABLE_CUDA
 #include <cuda_runtime.h>
@@ -324,6 +325,15 @@ public:
     /// @return Result containing new nccl_domain
     [[nodiscard]] static result<nccl_domain> from_mpi(const mpi_domain& mpi, int device_id);
 
+    /// @brief Split NCCL domain via MPI split + new NCCL communicator
+    /// @param mpi MPI domain used for bootstrapping the split
+    /// @param color Color for grouping (ranks with same color in same group)
+    /// @param device_id CUDA device ID for this rank in the new communicator
+    /// @param key Ordering key within color group (default 0)
+    /// @return Result containing pair of (new mpi_domain, new nccl_domain) for the sub-group
+    [[nodiscard]] static result<std::pair<mpi_domain, nccl_domain>>
+    split(const mpi_domain& mpi, int color, int device_id, int key = 0);
+
 private:
     std::shared_ptr<nccl::nccl_communicator> comm_;
     std::shared_ptr<nccl::nccl_comm_adapter> adapter_;
@@ -347,6 +357,12 @@ public:
 
     [[nodiscard]] static result<nccl_domain> from_mpi(const mpi_domain&, int) {
         return result<nccl_domain>::failure(
+            status{status_code::not_supported, no_rank, "NCCL not enabled"});
+    }
+
+    [[nodiscard]] static result<std::pair<mpi_domain, nccl_domain>>
+    split(const mpi_domain&, int, int, int = 0) {
+        return result<std::pair<mpi_domain, nccl_domain>>::failure(
             status{status_code::not_supported, no_rank, "NCCL not enabled"});
     }
 };
