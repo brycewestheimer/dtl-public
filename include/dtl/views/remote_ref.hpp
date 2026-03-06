@@ -161,7 +161,7 @@ public:
     /// @return Result containing the value or an error
     /// @note For local elements with a valid local_ptr, returns the local value.
     ///       For remote elements with an RMA window, performs RMA get.
-    ///       Otherwise returns not_implemented.
+    ///       Otherwise returns not_supported.
     [[nodiscard]] result<value_type> get() const {
         if (is_local() && local_ptr_) {
             return result<value_type>::success(*local_ptr_);
@@ -184,7 +184,7 @@ public:
     /// @return Result indicating success or error
     /// @note For local elements with a valid local_ptr, writes locally.
     ///       For remote elements with an RMA window, performs RMA put.
-    ///       Otherwise returns not_implemented.
+    ///       Otherwise returns not_supported.
     result<void> put(const value_type& value) {
         if (is_local() && local_ptr_) {
             *local_ptr_ = value;
@@ -443,7 +443,7 @@ public:
     /// @return Result containing the value or an error
     /// @note For local elements with a valid local_ptr, returns the local value.
     ///       For remote elements with an RMA window, performs RMA get.
-    ///       Otherwise returns not_implemented.
+    ///       Otherwise returns not_supported.
     [[nodiscard]] result<T> get() const {
         if (is_local() && local_ptr_) {
             return result<T>::success(*local_ptr_);

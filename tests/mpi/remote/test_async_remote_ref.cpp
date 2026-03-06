@@ -335,7 +335,7 @@ TEST_F(AsyncRemoteRefTest, AsyncGetWithNoWindowReturnsError) {
 
     auto result = future.get_result();
     EXPECT_TRUE(result.has_error());
-    EXPECT_EQ(result.error().code(), status_code::not_implemented);
+    EXPECT_EQ(result.error().code(), status_code::not_supported);
 }
 
 TEST_F(AsyncRemoteRefTest, AsyncPutWithNoWindowReturnsError) {
@@ -347,7 +347,7 @@ TEST_F(AsyncRemoteRefTest, AsyncPutWithNoWindowReturnsError) {
 
     auto result = future.get_result();
     EXPECT_TRUE(result.has_error());
-    EXPECT_EQ(result.error().code(), status_code::not_implemented);
+    EXPECT_EQ(result.error().code(), status_code::not_supported);
 }
 
 // =============================================================================

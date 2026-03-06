@@ -177,10 +177,8 @@ struct action {
 
     /// @brief Get the action ID
     /// @return Unique identifier for this action
-    /// @note Not constexpr because function pointer address is used
-    [[nodiscard]] static action_id id() noexcept {
-        static const action_id cached_id = compute_id();
-        return cached_id;
+    [[nodiscard]] static constexpr action_id id() noexcept {
+        return compute_id();
     }
 
     /// @brief Get the function pointer
@@ -206,34 +204,20 @@ struct action {
     }
 
 private:
-    /// @brief Compute unique action ID from function signature
-    /// @note Not constexpr because it uses reinterpret_cast
-    static action_id compute_id() noexcept {
-        // Hash based on:
-        // 1. Return type hash
-        // 2. Argument types hash
-        // 3. Function pointer value (for uniqueness)
-
+    /// @brief Compute unique action ID from the template-instantiated function
+    ///        identity, without relying on process-local code addresses.
+    static constexpr action_id compute_id() noexcept {
+#if defined(__GNUC__) || defined(__clang__)
+        return detail::fnv1a_hash(__PRETTY_FUNCTION__);
+#elif defined(_MSC_VER)
+        return detail::fnv1a_hash(__FUNCSIG__);
+#else
         action_id ret_hash = detail::type_hash<response_type>();
-
         action_id args_hash = []<typename... Ts>(std::tuple<Ts...>*) {
             return detail::tuple_type_hash<Ts...>();
         }(static_cast<request_type*>(nullptr));
-
-        // Mix in the function address for uniqueness
-        // (different functions with same signature get different IDs)
-        const auto func_addr = reinterpret_cast<std::uintptr_t>(
-            reinterpret_cast<void(*)()>(Func));
-        action_id ptr_hash{};
-        if constexpr (std::is_same_v<std::uintptr_t, action_id>) {
-            ptr_hash = func_addr;
-        } else {
-            ptr_hash = static_cast<action_id>(func_addr);
-        }
-
-        return detail::hash_combine(
-            detail::hash_combine(ret_hash, args_hash),
-            ptr_hash);
+        return detail::hash_combine(ret_hash, args_hash);
+#endif
     }
 };
 
