@@ -17,6 +17,7 @@
 #include <dtl/core/sync_domain.hpp>
 #include <dtl/error/result.hpp>
 #include <dtl/views/local_view.hpp>
+#include <dtl/views/device_view.hpp>
 #include <dtl/views/global_view.hpp>
 #include <dtl/views/segmented_view.hpp>
 
@@ -86,7 +87,9 @@ template <typename Container>
 ///       used by distributed_vector and distributed_array. distributed_tensor
 ///       uses a 2-argument pattern (no rank/offset), so it does not use this.
 template <typename Container>
-[[nodiscard]] auto make_local_view(Container& container) noexcept {
+[[nodiscard]] auto make_local_view(Container& container) noexcept
+    requires requires { Container::is_host_accessible(); } &&
+             (Container::is_host_accessible()) {
     using T = typename Container::value_type;
     using view_type = dtl::local_view<T>;
     return view_type{container.local_data(), container.local_size(),
@@ -95,11 +98,27 @@ template <typename Container>
 
 /// @brief Construct a const local_view from a container
 template <typename Container>
-[[nodiscard]] auto make_const_local_view(const Container& container) noexcept {
+[[nodiscard]] auto make_const_local_view(const Container& container) noexcept
+    requires requires { Container::is_host_accessible(); } &&
+             (Container::is_host_accessible()) {
     using T = typename Container::value_type;
     using view_type = dtl::local_view<const T>;
     return view_type{container.local_data(), container.local_size(),
                      container.rank(), container.partition().local_offset()};
+}
+
+/// @brief Construct a device_view from a GPU-capable container
+template <typename Container>
+[[nodiscard]] auto make_device_view(Container& container) noexcept
+    requires requires(Container& c) { c.device_view(); } {
+    return container.device_view();
+}
+
+/// @brief Construct a const device_view from a GPU-capable container
+template <typename Container>
+[[nodiscard]] auto make_device_view(const Container& container) noexcept
+    requires requires(const Container& c) { c.device_view(); } {
+    return container.device_view();
 }
 
 /// @brief Construct a global_view from a container

@@ -16,6 +16,7 @@
 #include <dtl/policies/policies.hpp>
 #include <dtl/index/partition_map.hpp>
 #include <dtl/views/local_view.hpp>
+#include <dtl/views/device_view.hpp>
 #include <dtl/views/global_view.hpp>
 #include <dtl/views/segmented_view.hpp>
 #include <dtl/views/remote_ref.hpp>
@@ -545,12 +546,14 @@ public:
 
     /// @brief Access local element by ND index
     /// @param local_idx Local ND index
-    [[nodiscard]] reference local(const index_type& local_idx) noexcept {
+    [[nodiscard]] reference local(const index_type& local_idx) noexcept
+        requires (placement_policy::is_host_accessible()) {
         return local_data_[static_cast<size_type>(layout_type::linearize(local_idx, partition_.local_extents()))];
     }
 
     /// @brief Access local element by ND index (const)
-    [[nodiscard]] const_reference local(const index_type& local_idx) const noexcept {
+    [[nodiscard]] const_reference local(const index_type& local_idx) const noexcept
+        requires (placement_policy::is_host_accessible()) {
         return local_data_[static_cast<size_type>(layout_type::linearize(local_idx, partition_.local_extents()))];
     }
 
@@ -558,7 +561,8 @@ public:
     template <typename... Indices>
         requires (sizeof...(Indices) == Rank) &&
                  (std::convertible_to<Indices, index_t> && ...)
-    [[nodiscard]] reference local(Indices... indices) noexcept {
+    [[nodiscard]] reference local(Indices... indices) noexcept
+        requires (placement_policy::is_host_accessible()) {
         return local(index_type{static_cast<index_t>(indices)...});
     }
 
@@ -566,31 +570,36 @@ public:
     template <typename... Indices>
         requires (sizeof...(Indices) == Rank) &&
                  (std::convertible_to<Indices, index_t> && ...)
-    [[nodiscard]] const_reference local(Indices... indices) const noexcept {
+    [[nodiscard]] const_reference local(Indices... indices) const noexcept
+        requires (placement_policy::is_host_accessible()) {
         return local(index_type{static_cast<index_t>(indices)...});
     }
 
     /// @brief Access local element by linear index
-    [[nodiscard]] reference local_linear(size_type linear_idx) noexcept {
+    [[nodiscard]] reference local_linear(size_type linear_idx) noexcept
+        requires (placement_policy::is_host_accessible()) {
         return local_data_[linear_idx];
     }
 
     /// @brief Access local element by linear index (const)
-    [[nodiscard]] const_reference local_linear(size_type linear_idx) const noexcept {
+    [[nodiscard]] const_reference local_linear(size_type linear_idx) const noexcept
+        requires (placement_policy::is_host_accessible()) {
         return local_data_[linear_idx];
     }
 
     /// @brief operator() for ND local access (commonly expected syntax)
     template <typename... Indices>
         requires (sizeof...(Indices) == Rank)
-    [[nodiscard]] reference operator()(Indices... indices) noexcept {
+    [[nodiscard]] reference operator()(Indices... indices) noexcept
+        requires (placement_policy::is_host_accessible()) {
         return local(indices...);
     }
 
     /// @brief operator() for ND local access (const)
     template <typename... Indices>
         requires (sizeof...(Indices) == Rank)
-    [[nodiscard]] const_reference operator()(Indices... indices) const noexcept {
+    [[nodiscard]] const_reference operator()(Indices... indices) const noexcept
+        requires (placement_policy::is_host_accessible()) {
         return local(indices...);
     }
 
@@ -605,7 +614,9 @@ public:
         index_t linear = layout_type::linearize(global_idx, partition_.global_extents());
         if (owner_rank == my_rank_) {
             auto local_idx = partition_.to_local(global_idx);
-            pointer ptr = &local(local_idx);
+            pointer ptr = local_data_.data()
+                        + static_cast<size_type>(layout_type::linearize(
+                              local_idx, partition_.local_extents()));
             return remote_ref<T>{owner_rank, linear, ptr};
         } else {
             return remote_ref<T>{owner_rank, linear, nullptr};
@@ -618,7 +629,9 @@ public:
         index_t linear = layout_type::linearize(global_idx, partition_.global_extents());
         if (owner_rank == my_rank_) {
             auto local_idx = partition_.to_local(global_idx);
-            const_pointer ptr = &local(local_idx);
+            const_pointer ptr = local_data_.data()
+                              + static_cast<size_type>(layout_type::linearize(
+                                    local_idx, partition_.local_extents()));
             return remote_ref<const T>{owner_rank, linear, ptr};
         } else {
             return remote_ref<const T>{owner_rank, linear, nullptr};
@@ -630,23 +643,39 @@ public:
     // ========================================================================
 
     /// @brief Get local view (linear, STL-compatible)
-    [[nodiscard]] local_view_type local_view() noexcept {
+    [[nodiscard]] local_view_type local_view() noexcept
+        requires (placement_policy::is_host_accessible()) {
         return local_view_type{local_data_.data(), local_data_.size()};
     }
 
     /// @brief Get const local view
-    [[nodiscard]] const_local_view_type local_view() const noexcept {
+    [[nodiscard]] const_local_view_type local_view() const noexcept
+        requires (placement_policy::is_host_accessible()) {
         return const_local_view_type{local_data_.data(), local_data_.size()};
     }
 
     /// @brief Get local data span
-    [[nodiscard]] std::span<T> local_span() noexcept {
+    [[nodiscard]] std::span<T> local_span() noexcept
+        requires (placement_policy::is_host_accessible()) {
         return std::span<T>{local_data_};
     }
 
     /// @brief Get const local data span
-    [[nodiscard]] std::span<const T> local_span() const noexcept {
+    [[nodiscard]] std::span<const T> local_span() const noexcept
+        requires (placement_policy::is_host_accessible()) {
         return std::span<const T>{local_data_};
+    }
+
+    /// @brief Get device view for GPU-capable placements
+    [[nodiscard]] auto device_view() noexcept
+        requires (DeviceStorable<T> && placement_policy::is_device_accessible()) {
+        return dtl::make_device_view(local_data_.data(), local_data_.size(), device_id_);
+    }
+
+    /// @brief Get const device view for GPU-capable placements
+    [[nodiscard]] auto device_view() const noexcept
+        requires (DeviceStorable<T> && placement_policy::is_device_accessible()) {
+        return dtl::make_device_view(local_data_.data(), local_data_.size(), device_id_);
     }
 
     /// @brief Get pointer to local data

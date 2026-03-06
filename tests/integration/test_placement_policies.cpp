@@ -10,6 +10,7 @@
 #include <dtl/core/types.hpp>
 #include <dtl/memory/default_allocator.hpp>
 #include <dtl/memory/host_memory_space.hpp>
+#include <dtl/containers/distributed_array.hpp>
 #include <dtl/containers/distributed_vector.hpp>
 #include <dtl/containers/distributed_tensor.hpp>
 #include <dtl/policies/placement/host_only.hpp>
@@ -28,6 +29,35 @@
 #include <type_traits>
 
 namespace dtl::test {
+
+namespace {
+
+template <typename Container>
+concept has_local_view = requires(Container& container) {
+    container.local_view();
+};
+
+template <typename Container>
+concept has_local_span = requires(Container& container) {
+    container.local_span();
+};
+
+template <typename Container>
+concept has_device_view = requires(Container& container) {
+    container.device_view();
+};
+
+template <typename Container>
+concept has_local_index_access = requires(Container& container) {
+    container.local(0);
+};
+
+template <typename Container>
+concept has_tensor_local_index_access = requires(Container& container) {
+    container.local(typename Container::index_type{});
+};
+
+}  // namespace
 
 // =============================================================================
 // Compile-Time Allocator Selection Tests
@@ -55,7 +85,7 @@ TEST(PlacementPolicyTest, DefaultPlacementSelectsHostAllocator) {
 
 TEST(PlacementPolicyTest, DeviceOnlySelectsCudaDeviceAllocator) {
     using alloc_t = select_allocator_t<float, device_only<0>>;
-    using expected_t = memory_space_allocator<float, cuda::cuda_device_memory_space>;
+    using expected_t = memory_space_allocator<float, cuda::cuda_device_memory_space_for<0>>;
 
     static_assert(std::is_same_v<alloc_t, expected_t>,
                   "device_only<0> should select cuda_device_memory_space allocator");
@@ -180,6 +210,10 @@ protected:
 TEST_F(CudaPlacementTest, DistributedVectorDeviceOnlyAllocatesOnDevice) {
     using vec_t = distributed_vector<float, device_only<0>>;
 
+    static_assert(!has_local_view<vec_t>);
+    static_assert(!has_local_index_access<vec_t>);
+    static_assert(has_device_view<vec_t>);
+
     // Verify allocator type at compile time - now uses device-specific space
     static_assert(std::is_same_v<
         typename vec_t::allocator_type,
@@ -208,10 +242,19 @@ TEST_F(CudaPlacementTest, DistributedVectorDeviceOnlyAllocatesOnDevice) {
 
     // Verify it's on the correct device
     EXPECT_EQ(attrs.device, 0);
+
+    auto view = vec.device_view();
+    EXPECT_EQ(view.data(), ptr);
+    EXPECT_EQ(view.size(), vec.local_size());
+    EXPECT_EQ(view.device_id(), 0);
 }
 
 TEST_F(CudaPlacementTest, DistributedVectorUnifiedMemoryAllocatesManaged) {
     using vec_t = distributed_vector<float, unified_memory>;
+
+    static_assert(has_local_view<vec_t>);
+    static_assert(has_local_index_access<vec_t>);
+    static_assert(has_device_view<vec_t>);
 
     // Verify allocator type at compile time
     static_assert(std::is_same_v<
@@ -234,10 +277,19 @@ TEST_F(CudaPlacementTest, DistributedVectorUnifiedMemoryAllocatesManaged) {
     cudaError_t err = cudaPointerGetAttributes(&attrs, ptr);
     ASSERT_EQ(err, cudaSuccess);
     EXPECT_EQ(attrs.type, cudaMemoryTypeManaged);
+
+    auto device_view = vec.device_view();
+    EXPECT_EQ(device_view.data(), ptr);
+    EXPECT_EQ(device_view.size(), vec.local_size());
 }
 
 TEST_F(CudaPlacementTest, DistributedTensorDeviceOnlyAllocatesOnDevice) {
     using tensor_t = distributed_tensor<double, 2, device_only<0>>;
+
+    static_assert(!has_local_view<tensor_t>);
+    static_assert(!has_local_span<tensor_t>);
+    static_assert(!has_tensor_local_index_access<tensor_t>);
+    static_assert(has_device_view<tensor_t>);
 
     // Verify allocator type at compile time - now uses device-specific space
     static_assert(std::is_same_v<
@@ -263,6 +315,35 @@ TEST_F(CudaPlacementTest, DistributedTensorDeviceOnlyAllocatesOnDevice) {
 
     // Verify it's on the correct device
     EXPECT_EQ(attrs.device, 0);
+
+    auto view = tensor.device_view();
+    EXPECT_EQ(view.data(), ptr);
+    EXPECT_EQ(view.size(), tensor.local_size());
+    EXPECT_EQ(view.device_id(), 0);
+}
+
+TEST_F(CudaPlacementTest, DistributedArrayDeviceOnlyExposesDeviceViewOnly) {
+    using array_t = distributed_array<int, 64, device_only<0>>;
+
+    static_assert(!has_local_view<array_t>);
+    static_assert(!has_local_index_access<array_t>);
+    static_assert(has_device_view<array_t>);
+
+    array_t arr;
+
+    int* ptr = arr.local_data();
+    ASSERT_NE(ptr, nullptr);
+
+    cudaPointerAttributes attrs;
+    cudaError_t err = cudaPointerGetAttributes(&attrs, ptr);
+    ASSERT_EQ(err, cudaSuccess);
+    EXPECT_EQ(attrs.type, cudaMemoryTypeDevice);
+    EXPECT_EQ(attrs.device, 0);
+
+    auto view = arr.device_view();
+    EXPECT_EQ(view.data(), ptr);
+    EXPECT_EQ(view.size(), arr.local_size());
+    EXPECT_EQ(view.device_id(), 0);
 }
 
 TEST_F(CudaPlacementTest, UnifiedMemoryAccessibleFromHost) {

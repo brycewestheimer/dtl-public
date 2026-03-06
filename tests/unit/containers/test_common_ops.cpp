@@ -25,6 +25,21 @@ struct test_context {
     [[nodiscard]] rank_t size() const noexcept { return num_ranks; }
 };
 
+template <typename Container>
+concept has_helper_local_view = requires(Container& container) {
+    detail::make_local_view(container);
+};
+
+template <typename Container>
+concept has_helper_const_local_view = requires(const Container& container) {
+    detail::make_const_local_view(container);
+};
+
+template <typename Container>
+concept has_helper_device_view = requires(Container& container) {
+    detail::make_device_view(container);
+};
+
 }  // namespace
 
 // =============================================================================
@@ -123,5 +138,25 @@ TEST(CommonOpsTest, MakeLocalViewForArray) {
     EXPECT_EQ(view.size(), arr.local_size());
     EXPECT_EQ(view.data(), arr.local_data());
 }
+
+#if DTL_ENABLE_CUDA
+
+TEST(CommonOpsTest, DeviceOnlyHelpersExposeDeviceViewOnly) {
+    using vec_t = distributed_vector<int, device_only<0>>;
+
+    static_assert(!has_helper_local_view<vec_t>);
+    static_assert(!has_helper_const_local_view<vec_t>);
+    static_assert(has_helper_device_view<vec_t>);
+}
+
+TEST(CommonOpsTest, UnifiedMemoryHelpersExposeBothViewKinds) {
+    using vec_t = distributed_vector<int, unified_memory>;
+
+    static_assert(has_helper_local_view<vec_t>);
+    static_assert(has_helper_const_local_view<vec_t>);
+    static_assert(has_helper_device_view<vec_t>);
+}
+
+#endif
 
 }  // namespace dtl::test

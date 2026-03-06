@@ -10,6 +10,7 @@
 #pragma once
 
 #include <dtl/core/config.hpp>
+#include <dtl/core/fwd.hpp>
 #include <dtl/core/types.hpp>
 #include <dtl/core/traits.hpp>
 #include <dtl/policies/placement/placement_policy.hpp>

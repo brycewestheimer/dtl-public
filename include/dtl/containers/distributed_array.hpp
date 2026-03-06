@@ -16,6 +16,7 @@
 #include <dtl/policies/policies.hpp>
 #include <dtl/index/partition_map.hpp>
 #include <dtl/views/local_view.hpp>
+#include <dtl/views/device_view.hpp>
 #include <dtl/views/global_view.hpp>
 #include <dtl/views/segmented_view.hpp>
 #include <dtl/memory/default_allocator.hpp>
@@ -292,15 +293,29 @@ public:
     // ========================================================================
 
     /// @brief Get local view (STL-compatible, no communication)
-    [[nodiscard]] local_view_type local_view() noexcept {
+    [[nodiscard]] local_view_type local_view() noexcept
+        requires (placement_policy::is_host_accessible()) {
         return local_view_type{local_data_.data(), local_data_.size(),
                               my_rank_, partition_.local_offset()};
     }
 
     /// @brief Get const local view
-    [[nodiscard]] const_local_view_type local_view() const noexcept {
+    [[nodiscard]] const_local_view_type local_view() const noexcept
+        requires (placement_policy::is_host_accessible()) {
         return const_local_view_type{local_data_.data(), local_data_.size(),
                                      my_rank_, partition_.local_offset()};
+    }
+
+    /// @brief Get device view for GPU-capable placements
+    [[nodiscard]] auto device_view() noexcept
+        requires (DeviceStorable<T> && placement_policy::is_device_accessible()) {
+        return dtl::make_device_view(local_data_.data(), local_data_.size(), device_id_);
+    }
+
+    /// @brief Get const device view for GPU-capable placements
+    [[nodiscard]] auto device_view() const noexcept
+        requires (DeviceStorable<T> && placement_policy::is_device_accessible()) {
+        return dtl::make_device_view(local_data_.data(), local_data_.size(), device_id_);
     }
 
     /// @brief Get global view (returns remote_ref for all elements)
@@ -329,12 +344,14 @@ public:
 
     /// @brief Access local element by local index
     /// @param local_idx Index within local partition
-    [[nodiscard]] reference local(size_type local_idx) noexcept {
+    [[nodiscard]] reference local(size_type local_idx) noexcept
+        requires (placement_policy::is_host_accessible()) {
         return local_data_[local_idx];
     }
 
     /// @brief Access local element by local index (const)
-    [[nodiscard]] const_reference local(size_type local_idx) const noexcept {
+    [[nodiscard]] const_reference local(size_type local_idx) const noexcept
+        requires (placement_policy::is_host_accessible()) {
         return local_data_[local_idx];
     }
 

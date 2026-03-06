@@ -156,6 +156,11 @@ target_sources(dtl_unit_tests PRIVATE
     unit/backend/test_backend_concept_conformance.cpp
 )
 
+# Placement and memory integration tests
+target_sources(dtl_unit_tests PRIVATE
+    integration/test_placement_policies.cpp
+)
+
 # Utility tests
 target_sources(dtl_unit_tests PRIVATE
     unit/utility/test_resource.cpp
