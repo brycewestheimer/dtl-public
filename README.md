@@ -370,18 +370,17 @@ Examples:
 
 Primary documentation lives in `docs/`.
 
+- **C++ API Quick Reference** (no build needed): [`docs/api_reference/cpp_quick_reference.md`](docs/api_reference/cpp_quick_reference.md)
 - Docs home: `docs/index.md`
 - Getting started: `docs/getting_started.md`
 - User guide: `docs/user_guide/`
 - API reference: `docs/api_reference/`
 
-Build docs locally:
+Build full docs locally (Doxygen + Sphinx + Breathe + RTD theme):
 
 ```bash
 bash scripts/generate_docs.sh build-docs -- -j6
 ```
-
-The docs pipeline uses Doxygen + Sphinx + Breathe + RTD theme.
 
 ## Testing
 

@@ -85,3 +85,21 @@ if(DTL_BUILD_C_BINDINGS)
     dtl_add_benchmark(bench_c_api bindings/bench_c_api.cpp)
     target_link_libraries(bench_c_api PRIVATE dtl_c)
 endif()
+
+# Scaling benchmarks (MPI multi-rank strong/weak scaling)
+if(DTL_MPI_AVAILABLE)
+    add_executable(bench_scaling scaling/bench_scaling.cpp)
+    target_link_libraries(bench_scaling PRIVATE
+        DTL::dtl
+        DTL::cpu
+        MPI::MPI_CXX
+        benchmark::benchmark
+    )
+    target_include_directories(bench_scaling PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/backends
+    )
+    target_compile_features(bench_scaling PRIVATE cxx_std_20)
+    target_compile_definitions(bench_scaling PRIVATE DTL_SUPPRESS_DEPRECATION_WARNINGS=1)
+endif()

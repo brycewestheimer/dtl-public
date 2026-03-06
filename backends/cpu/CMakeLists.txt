@@ -34,6 +34,9 @@ install(TARGETS dtl_cpu_backend
 )
 
 # Install headers
-install(FILES cpu_executor.hpp
+install(FILES
+    cpu_executor.hpp
+    work_stealing_queue.hpp
+    work_stealing_pool.hpp
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/backends/cpu
 )

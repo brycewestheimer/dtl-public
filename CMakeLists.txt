@@ -61,6 +61,8 @@ option(DTL_WARNINGS_AS_ERRORS "Treat compiler warnings as errors"       OFF)
 option(DTL_BUILD_C_BINDINGS   "Build C ABI bindings"                    OFF)
 option(DTL_BUILD_PYTHON       "Build Python bindings"                   OFF)
 option(DTL_BUILD_FORTRAN      "Build Fortran bindings (requires Fortran compiler)" OFF)
+option(DTL_BUILD_FUZZ_TARGETS "Build fuzz testing targets"              OFF)
+option(DTL_USE_WORK_STEALING  "Use work-stealing thread pool instead of mutex-based pool" ON)
 
 # -----------------------------------------------------------------------------
 # Optional Serialization Adapter Options
@@ -233,6 +235,10 @@ endif()
 
 if(DTL_ENABLE_SHMEM)
     target_compile_definitions(dtl INTERFACE DTL_ENABLE_SHMEM)
+endif()
+
+if(DTL_USE_WORK_STEALING)
+    target_compile_definitions(dtl INTERFACE DTL_USE_WORK_STEALING=1)
 endif()
 
 # Optional serialization adapters
@@ -491,6 +497,7 @@ message(STATUS "  Coverage:       ${DTL_ENABLE_COVERAGE}")
 message(STATUS "  C bindings:     ${DTL_BUILD_C_BINDINGS}")
 message(STATUS "  Python bindings: ${DTL_BUILD_PYTHON}")
 message(STATUS "  Fortran bindings: ${DTL_BUILD_FORTRAN}")
+message(STATUS "  Work-stealing pool: ${DTL_USE_WORK_STEALING}")
 message(STATUS "")
 message(STATUS "Serialization Adapters:")
 message(STATUS "  Cereal adapter: ${DTL_ENABLE_CEREAL} (available: ${DTL_CEREAL_AVAILABLE})")

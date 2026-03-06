@@ -23,6 +23,11 @@
 #include <thread>
 #include <vector>
 
+// Work-stealing pool (opt-in via DTL_USE_WORK_STEALING)
+#if DTL_USE_WORK_STEALING
+#include "work_stealing_pool.hpp"
+#endif
+
 namespace dtl {
 namespace cpu {
 
@@ -149,15 +154,23 @@ private:
 
 /// @brief CPU-based parallel executor using thread pool
 /// @details Satisfies the Executor and ParallelExecutor concepts.
+///          When DTL_USE_WORK_STEALING is defined, uses the work-stealing pool
+///          for reduced contention on high-core-count systems.
 class cpu_executor {
 public:
+#if DTL_USE_WORK_STEALING
+    using pool_type = work_stealing_pool;
+#else
+    using pool_type = thread_pool;
+#endif
+
     /// @brief Construct with default thread count
-    cpu_executor() : pool_(std::make_unique<thread_pool>()) {}
+    cpu_executor() : pool_(std::make_unique<pool_type>()) {}
 
     /// @brief Construct with specified thread count
     /// @param num_threads Number of worker threads
     explicit cpu_executor(size_type num_threads)
-        : pool_(std::make_unique<thread_pool>(num_threads)) {}
+        : pool_(std::make_unique<pool_type>(num_threads)) {}
 
     /// @brief Destructor
     ~cpu_executor() = default;
@@ -361,7 +374,7 @@ public:
     }
 
 private:
-    std::unique_ptr<thread_pool> pool_;
+    std::unique_ptr<pool_type> pool_;
 };
 
 // ============================================================================

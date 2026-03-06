@@ -382,6 +382,7 @@ target_sources(dtl_unit_tests PRIVATE
 target_sources(dtl_unit_tests PRIVATE
     unit/policies/test_policy_types.cpp
     unit/serialization/test_stl_serializers.cpp
+    unit/serialization/test_aggregate_serializer.cpp
 )
 
 # Phase 09: Async Operation Completion tests
@@ -425,6 +426,7 @@ target_sources(dtl_unit_tests PRIVATE
 target_sources(dtl_unit_tests PRIVATE
     unit/error/test_error_recovery.cpp
     unit/stress/test_large_scale.cpp
+    unit/stress/test_concurrent_access.cpp
 )
 
 # Phase 21: HIP Backend Parity & Device Abstraction Fixes (V1.5.1)
@@ -457,6 +459,11 @@ target_sources(dtl_unit_tests PRIVATE
     unit/backend/test_shared_region_posix.cpp
     unit/backend/test_shared_memory_comm.cpp
     unit/backend/test_hierarchical_communicator.cpp
+)
+
+# Work-stealing thread pool tests
+target_sources(dtl_unit_tests PRIVATE
+    unit/backend/test_work_stealing_pool.cpp
 )
 
 # Phase 27: Code Deduplication & Refactoring (V1.7.2)
@@ -728,6 +735,13 @@ add_custom_target(run_unit_tests
 # -----------------------------------------------------------------------------
 if(DTL_BUILD_C_BINDINGS)
     add_subdirectory(bindings/c)
+endif()
+
+# -----------------------------------------------------------------------------
+# Fuzz Targets (optional, requires Clang)
+# -----------------------------------------------------------------------------
+if(DTL_BUILD_FUZZ_TARGETS)
+    add_subdirectory(fuzz)
 endif()
 
 # -----------------------------------------------------------------------------

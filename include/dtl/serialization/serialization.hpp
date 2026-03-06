@@ -24,5 +24,8 @@
 // Built-in STL type serializers
 #include <dtl/serialization/stl_serializers.hpp>
 
+// Aggregate type serialization macro (DTL_SERIALIZABLE)
+#include <dtl/serialization/aggregate_serializer.hpp>
+
 // Optional library integration
 #include <dtl/serialization/library_integration.hpp>

@@ -37,11 +37,48 @@ if(DTL_MPI_AVAILABLE)
     add_test(NAME MpiMultiRank_2
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2
                 $<TARGET_FILE:test_mpi_multirank>)
+    add_test(NAME MpiMultiRank_3
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 3
+                ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_mpi_multirank> ${MPIEXEC_POSTFLAGS})
     add_test(NAME MpiMultiRank_4
         COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 4
                 $<TARGET_FILE:test_mpi_multirank>)
-    set_tests_properties(MpiMultiRank_2 MpiMultiRank_4 PROPERTIES
+    set_tests_properties(MpiMultiRank_2 MpiMultiRank_3 MpiMultiRank_4 PROPERTIES
         LABELS "integration;mpi"
+        TIMEOUT 60
+    )
+
+    # ---- MPI Algebraic Invariant Tests (2, 3, and 4 ranks) ----
+    add_executable(test_mpi_invariants test_mpi_invariants.cpp)
+    target_compile_features(test_mpi_invariants PRIVATE cxx_std_20)
+    target_link_libraries(test_mpi_invariants PRIVATE
+        DTL::dtl
+        DTL::cpu
+        MPI::MPI_CXX
+        GTest::gtest
+    )
+    target_include_directories(test_mpi_invariants PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/backends
+    )
+    target_compile_definitions(test_mpi_invariants PRIVATE DTL_SUPPRESS_DEPRECATION_WARNINGS=1)
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(test_mpi_invariants PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+
+    add_test(NAME MpiInvariants_2
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2
+                ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_mpi_invariants> ${MPIEXEC_POSTFLAGS})
+    add_test(NAME MpiInvariants_3
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 3
+                ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_mpi_invariants> ${MPIEXEC_POSTFLAGS})
+    add_test(NAME MpiInvariants_4
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 4
+                ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_mpi_invariants> ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(MpiInvariants_2 MpiInvariants_3 MpiInvariants_4 PROPERTIES
+        LABELS "integration;mpi;invariants"
         TIMEOUT 60
     )
 endif()

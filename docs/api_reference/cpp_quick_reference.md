@@ -549,6 +549,96 @@ auto err = dtl::make_error<int>(status_code::cuda_error, rank, "msg");
 
 ---
 
+## Serialization
+
+**Header:** `#include <dtl/serialization/serialization.hpp>`
+
+DTL automatically serializes trivially-copyable types via `memcpy`. For other types, provide a `serializer<T>` specialization or use the `DTL_SERIALIZABLE` macro.
+
+### Built-in Support
+
+| Type | Header | Notes |
+|------|--------|-------|
+| Trivial types (`int`, `double`, PODs) | `serializer.hpp` | `memcpy`-based, zero overhead |
+| `std::array<T,N>` | `serializer.hpp` | Trivial elements only |
+| `std::pair<T1,T2>` | `serializer.hpp` | Trivial elements only |
+| `std::string` | `stl_serializers.hpp` | Length-prefixed |
+| `std::vector<T>` | `stl_serializers.hpp` | Count-prefixed, per-element |
+| `std::optional<T>` | `stl_serializers.hpp` | Flag byte + value |
+
+### `DTL_SERIALIZABLE` Macro
+
+**Header:** `#include <dtl/serialization/aggregate_serializer.hpp>`
+
+```cpp
+struct my_message {
+    int id;
+    std::string name;
+    std::vector<double> data;
+};
+DTL_SERIALIZABLE(my_message, id, name, data)
+// Generates dtl::serializer<my_message> using field-by-field serialization
+```
+
+### Custom Serializer (Manual)
+
+```cpp
+template <>
+struct dtl::serializer<MyType> {
+    static dtl::size_type serialized_size(const MyType& v);
+    static dtl::size_type serialize(const MyType& v, std::byte* buf);
+    static MyType deserialize(const std::byte* buf, dtl::size_type size);
+};
+```
+
+### Helper Functions
+
+```cpp
+dtl::serialize_field(value, buffer);        // Serialize one field
+dtl::deserialize_field<T>(buffer, size);    // Deserialize one field
+dtl::field_serialized_size(value);          // Size of one field
+```
+
+---
+
+## Executor and `parallel_for`
+
+**Header:** `#include <backends/cpu/cpu_executor.hpp>`
+
+### `cpu_executor`
+
+```cpp
+dtl::cpu::cpu_executor exec;                // Hardware concurrency threads
+dtl::cpu::cpu_executor exec(8);             // 8 threads
+
+// Execute tasks
+exec.execute(func);                         // Fire-and-forget
+auto fut = exec.async_execute(func);        // Returns std::future
+exec.sync_execute(func);                    // Blocks until done
+
+// Parallel loops
+exec.parallel_for(0, N, [](dtl::index_t i) { /* ... */ });
+exec.parallel_for(count, [](dtl::size_type i) { /* ... */ });
+exec.parallel_for_chunked(0, N, chunk, func);
+
+// Parallel reduce
+T result = exec.parallel_reduce<T>(0, N, identity, map_fn, reduce_fn);
+
+// Queries
+exec.num_threads();
+exec.max_parallelism();
+exec.synchronize();                         // Wait for all tasks
+```
+
+### Free Functions (Default Executor)
+
+```cpp
+dtl::cpu::parallel_for(0, N, func);
+dtl::cpu::parallel_reduce<T>(0, N, identity, map_fn, reduce_fn);
+```
+
+---
+
 ## See Also
 
 - [C API Reference](c_api_reference.md)
