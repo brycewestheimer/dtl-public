@@ -1,0 +1,304 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 20,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "base",
+            "hidden": true,
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_CXX_STANDARD": "20",
+                "CMAKE_CXX_STANDARD_REQUIRED": "ON",
+                "CMAKE_CXX_EXTENSIONS": "OFF"
+            }
+        },
+        {
+            "name": "dev",
+            "displayName": "Development (MPI + tests)",
+            "description": "Debug build with MPI and tests for day-to-day development",
+            "inherits": "base",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "DTL_ENABLE_MPI": "ON",
+                "DTL_BUILD_TESTS": "ON",
+                "DTL_BUILD_EXAMPLES": "ON"
+            }
+        },
+        {
+            "name": "dev-no-mpi",
+            "displayName": "Development (CPU-only)",
+            "description": "Debug build without MPI for fast iteration on local-only code",
+            "inherits": "base",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "DTL_ENABLE_MPI": "OFF",
+                "DTL_BUILD_TESTS": "ON",
+                "DTL_BUILD_EXAMPLES": "ON"
+            }
+        },
+        {
+            "name": "dev-cuda",
+            "displayName": "Development (MPI + CUDA)",
+            "description": "Debug build with MPI, CUDA, and tests",
+            "inherits": "dev",
+            "cacheVariables": {
+                "DTL_ENABLE_CUDA": "ON"
+            }
+        },
+        {
+            "name": "dev-hip",
+            "displayName": "Development (MPI + HIP)",
+            "description": "Debug build with MPI, HIP/ROCm, and tests",
+            "inherits": "dev",
+            "cacheVariables": {
+                "DTL_ENABLE_HIP": "ON"
+            }
+        },
+        {
+            "name": "release",
+            "displayName": "Release",
+            "description": "Optimized release build with MPI",
+            "inherits": "base",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "DTL_ENABLE_MPI": "ON",
+                "DTL_BUILD_TESTS": "OFF",
+                "DTL_BUILD_EXAMPLES": "ON"
+            }
+        },
+        {
+            "name": "ci",
+            "displayName": "CI (warnings-as-errors)",
+            "description": "CI build matching the primary ci.yml matrix configuration",
+            "inherits": "base",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "DTL_ENABLE_MPI": "ON",
+                "DTL_BUILD_TESTS": "ON",
+                "DTL_WARNINGS_AS_ERRORS": "ON"
+            }
+        },
+        {
+            "name": "ci-no-mpi",
+            "displayName": "CI (no MPI, warnings-as-errors)",
+            "description": "CI build without MPI for host-only validation",
+            "inherits": "ci",
+            "cacheVariables": {
+                "DTL_ENABLE_MPI": "OFF"
+            }
+        },
+        {
+            "name": "asan",
+            "displayName": "AddressSanitizer",
+            "description": "Debug build with ASan for memory error detection",
+            "inherits": "base",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "DTL_ENABLE_MPI": "OFF",
+                "DTL_BUILD_TESTS": "ON",
+                "CMAKE_CXX_FLAGS": "-fsanitize=address -fno-omit-frame-pointer",
+                "CMAKE_C_FLAGS": "-fsanitize=address -fno-omit-frame-pointer",
+                "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address",
+                "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=address"
+            }
+        },
+        {
+            "name": "tsan",
+            "displayName": "ThreadSanitizer",
+            "description": "Debug build with TSan for data race detection",
+            "inherits": "base",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "DTL_ENABLE_MPI": "OFF",
+                "DTL_BUILD_TESTS": "ON",
+                "CMAKE_CXX_FLAGS": "-fsanitize=thread",
+                "CMAKE_C_FLAGS": "-fsanitize=thread",
+                "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread",
+                "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=thread"
+            }
+        },
+        {
+            "name": "coverage",
+            "displayName": "Coverage",
+            "description": "Debug build with coverage instrumentation (lcov/gcovr)",
+            "inherits": "base",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "DTL_ENABLE_MPI": "OFF",
+                "DTL_BUILD_TESTS": "ON",
+                "DTL_ENABLE_COVERAGE": "ON"
+            }
+        },
+        {
+            "name": "bindings",
+            "displayName": "All Language Bindings",
+            "description": "Release build with C, Python, and Fortran bindings",
+            "inherits": "base",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "DTL_ENABLE_MPI": "ON",
+                "DTL_BUILD_TESTS": "ON",
+                "DTL_BUILD_C_BINDINGS": "ON",
+                "DTL_BUILD_PYTHON": "ON",
+                "DTL_BUILD_FORTRAN": "ON"
+            }
+        },
+        {
+            "name": "minimal",
+            "displayName": "Minimal (CPU-only, no tests)",
+            "description": "Fastest possible build for quick compilation checks",
+            "inherits": "base",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "DTL_ENABLE_MPI": "OFF",
+                "DTL_BUILD_TESTS": "OFF",
+                "DTL_BUILD_EXAMPLES": "OFF"
+            }
+        },
+        {
+            "name": "benchmarks",
+            "displayName": "Benchmarks",
+            "description": "Release build with benchmarks enabled",
+            "inherits": "base",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "DTL_ENABLE_MPI": "ON",
+                "DTL_BUILD_TESTS": "OFF",
+                "DTL_BUILD_BENCHMARKS": "ON"
+            }
+        },
+        {
+            "name": "docs",
+            "displayName": "Documentation",
+            "description": "Build with documentation targets enabled",
+            "inherits": "base",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "DTL_BUILD_TESTS": "OFF",
+                "DTL_BUILD_EXAMPLES": "OFF",
+                "DTL_BUILD_DOCS": "ON"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "dev",
+            "configurePreset": "dev"
+        },
+        {
+            "name": "dev-no-mpi",
+            "configurePreset": "dev-no-mpi"
+        },
+        {
+            "name": "release",
+            "configurePreset": "release"
+        },
+        {
+            "name": "ci",
+            "configurePreset": "ci"
+        },
+        {
+            "name": "coverage",
+            "configurePreset": "coverage"
+        },
+        {
+            "name": "bindings",
+            "configurePreset": "bindings"
+        },
+        {
+            "name": "minimal",
+            "configurePreset": "minimal"
+        },
+        {
+            "name": "benchmarks",
+            "configurePreset": "benchmarks"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "dev",
+            "configurePreset": "dev",
+            "output": {
+                "outputOnFailure": true
+            },
+            "execution": {
+                "timeout": 120
+            }
+        },
+        {
+            "name": "dev-no-mpi",
+            "configurePreset": "dev-no-mpi",
+            "output": {
+                "outputOnFailure": true
+            },
+            "execution": {
+                "timeout": 120
+            }
+        },
+        {
+            "name": "ci",
+            "configurePreset": "ci",
+            "output": {
+                "outputOnFailure": true
+            },
+            "execution": {
+                "timeout": 120
+            }
+        },
+        {
+            "name": "coverage",
+            "configurePreset": "coverage",
+            "output": {
+                "outputOnFailure": true
+            },
+            "execution": {
+                "timeout": 180
+            }
+        },
+        {
+            "name": "asan",
+            "configurePreset": "asan",
+            "output": {
+                "outputOnFailure": true
+            },
+            "execution": {
+                "timeout": 300
+            }
+        },
+        {
+            "name": "tsan",
+            "configurePreset": "tsan",
+            "output": {
+                "outputOnFailure": true
+            },
+            "execution": {
+                "timeout": 300
+            }
+        },
+        {
+            "name": "bindings",
+            "configurePreset": "bindings",
+            "output": {
+                "outputOnFailure": true
+            },
+            "execution": {
+                "timeout": 120
+            }
+        }
+    ]
+}

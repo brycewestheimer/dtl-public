@@ -28,6 +28,7 @@ CLAUDE.md
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
+CMakeUserPresets.json
 Makefile
 *.cmake
 !cmake/*.cmake
