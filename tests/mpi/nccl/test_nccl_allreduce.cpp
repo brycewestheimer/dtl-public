@@ -16,6 +16,7 @@
 #include <dtl/core/types.hpp>
 #include <dtl/error/result.hpp>
 
+#include <backends/nccl/nccl_comm_adapter.hpp>
 #include <backends/nccl/nccl_communicator.hpp>
 
 #include <cuda_runtime.h>
@@ -78,12 +79,16 @@ TEST_F(NcclAllreduceTest, SumFloat) {
     // Allocate device memory
     float* d_send = nullptr;
     float* d_recv = nullptr;
-    cudaMalloc(&d_send, count * sizeof(float));
-    cudaMalloc(&d_recv, count * sizeof(float));
+    ASSERT_EQ(cudaMalloc(reinterpret_cast<void**>(&d_send), count * sizeof(float)),
+              cudaSuccess);
+    ASSERT_EQ(cudaMalloc(reinterpret_cast<void**>(&d_recv), count * sizeof(float)),
+              cudaSuccess);
 
     // Initialize send buffer (each rank sends {rank+1, rank+1, rank+1, rank+1})
     std::vector<float> h_send(count, static_cast<float>(rank_ + 1));
-    cudaMemcpy(d_send, h_send.data(), count * sizeof(float), cudaMemcpyHostToDevice);
+    ASSERT_EQ(cudaMemcpy(d_send, h_send.data(), count * sizeof(float),
+                         cudaMemcpyHostToDevice),
+              cudaSuccess);
 
     // Create a simple NCCL communicator for direct operation
     // (In a real implementation, we'd expose the communicator from nccl_domain)
@@ -97,6 +102,54 @@ TEST_F(NcclAllreduceTest, SumFloat) {
     // Clean up
     cudaFree(d_send);
     cudaFree(d_recv);
+}
+
+TEST_F(NcclAllreduceTest, AdapterRejectsHostBuffers) {
+    ASSERT_TRUE(nccl_domain_->valid());
+
+    auto& adapter = nccl_domain_->adapter();
+    double host_send = static_cast<double>(rank_ + 1);
+    double host_recv = 0.0;
+
+    EXPECT_THROW(adapter.allreduce_sum(&host_send, &host_recv, 1),
+                 dtl::nccl::communication_error);
+}
+
+TEST_F(NcclAllreduceTest, AdapterAllreduceSumBlocksAndReturnsExpectedValue) {
+    ASSERT_TRUE(nccl_domain_->valid());
+
+    constexpr size_t count = 4;
+    const double expected = static_cast<double>(size_ * (size_ + 1) / 2);
+
+    double* d_send = nullptr;
+    double* d_recv = nullptr;
+    ASSERT_EQ(cudaMalloc(reinterpret_cast<void**>(&d_send), count * sizeof(double)),
+              cudaSuccess);
+    ASSERT_EQ(cudaMalloc(reinterpret_cast<void**>(&d_recv), count * sizeof(double)),
+              cudaSuccess);
+
+    std::vector<double> h_send(count, static_cast<double>(rank_ + 1));
+    ASSERT_EQ(cudaMemcpy(d_send, h_send.data(), count * sizeof(double),
+                         cudaMemcpyHostToDevice),
+              cudaSuccess);
+
+    auto& adapter = nccl_domain_->adapter();
+    EXPECT_NO_THROW(adapter.allreduce_sum(d_send, d_recv, count));
+
+    auto stream_status = cudaStreamQuery(nccl_domain_->communicator().stream());
+    EXPECT_EQ(stream_status, cudaSuccess) << "blocking NCCL collectives must synchronize";
+
+    std::vector<double> h_recv(count, 0.0);
+    ASSERT_EQ(cudaMemcpy(h_recv.data(), d_recv, count * sizeof(double),
+                         cudaMemcpyDeviceToHost),
+              cudaSuccess);
+
+    for (double value : h_recv) {
+        EXPECT_DOUBLE_EQ(value, expected);
+    }
+
+    EXPECT_EQ(cudaFree(d_send), cudaSuccess);
+    EXPECT_EQ(cudaFree(d_recv), cudaSuccess);
 }
 
 TEST_F(NcclAllreduceTest, DomainRankSizeConsistency) {

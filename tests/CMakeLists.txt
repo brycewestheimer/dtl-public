@@ -95,6 +95,10 @@ target_link_libraries(dtl_unit_tests PRIVATE
     GTest::gtest_main
 )
 
+if(DTL_ENABLE_NCCL)
+    target_link_libraries(dtl_unit_tests PRIVATE DTL::nccl)
+endif()
+
 # C bindings helpers are only available when the C ABI is built
 if(DTL_BUILD_C_BINDINGS)
     target_link_libraries(dtl_unit_tests PRIVATE dtl_c)
@@ -320,11 +324,17 @@ target_sources(dtl_unit_tests PRIVATE
 target_sources(dtl_unit_tests PRIVATE
     unit/backend/test_hip_memory_transfer.cpp
     unit/backend/test_hip_memory_space.cpp
-    unit/backend/test_nccl_communicator.cpp
+    unit/backend/test_cuda_memory_space.cpp
     unit/memory/test_pinned_memory.cpp
     unit/memory/test_unified_memory_prefetch.cpp
     unit/memory/test_pointer_utils.cpp
 )
+
+if(DTL_ENABLE_NCCL)
+    target_sources(dtl_unit_tests PRIVATE
+        unit/backend/test_nccl_communicator.cpp
+    )
+endif()
 
 # Phase 12E: Bindings Extension tests
 if(DTL_BUILD_C_BINDINGS)
@@ -450,21 +460,28 @@ add_subdirectory(test_plugins)
 
 # Phase 24: NCCL Point-to-Point & SHMEM Send/Recv (V1.6.1)
 target_sources(dtl_unit_tests PRIVATE
-    unit/backend/test_nccl_p2p.cpp
     unit/backend/test_shmem_p2p.cpp
 )
 
 # NCCL Comm Adapter (concept-compliant Layer 2)
-target_sources(dtl_unit_tests PRIVATE
-    unit/backend/test_nccl_comm_adapter.cpp
-)
+if(DTL_ENABLE_NCCL)
+    target_sources(dtl_unit_tests PRIVATE
+        unit/backend/test_nccl_p2p.cpp
+        unit/backend/test_nccl_comm_adapter.cpp
+    )
+endif()
 
 # Phase 25: Experimental Backend Completion (V1.7.0)
 target_sources(dtl_unit_tests PRIVATE
     unit/backend/test_shared_region_posix.cpp
     unit/backend/test_shared_memory_comm.cpp
-    unit/backend/test_hierarchical_communicator.cpp
 )
+
+if(DTL_ENABLE_NCCL)
+    target_sources(dtl_unit_tests PRIVATE
+        unit/backend/test_hierarchical_communicator.cpp
+    )
+endif()
 
 # Work-stealing thread pool tests
 target_sources(dtl_unit_tests PRIVATE

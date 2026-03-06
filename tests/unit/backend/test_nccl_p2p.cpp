@@ -113,7 +113,8 @@ TEST(NcclP2PTest, WaitEventNullHandleIsSafe) {
     dtl::nccl::nccl_communicator comm;
     request_handle req{nullptr};
     // wait_event on null handle should be a no-op
-    comm.wait_event(req);
+    auto result = comm.wait_event(req);
+    ASSERT_TRUE(result.has_value());
     EXPECT_EQ(req.handle, nullptr);
 }
 
@@ -121,7 +122,9 @@ TEST(NcclP2PTest, TestEventNullHandleReturnsTrue) {
     dtl::nccl::nccl_communicator comm;
     request_handle req{nullptr};
     // Null handle is "already completed"
-    EXPECT_TRUE(comm.test_event(req));
+    auto result = comm.test_event(req);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(*result);
 }
 
 // ---------------------------------------------------------------------------

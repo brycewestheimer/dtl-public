@@ -188,6 +188,7 @@ TEST(NcclCommunicatorTest, AllreduceTemplate) {
     float recv[4] = {};
     auto result = comm.allreduce(send, recv, 4, dtl::nccl::nccl_op::sum);
     EXPECT_TRUE(result.has_error());
+    EXPECT_EQ(result.error().code(), dtl::status_code::invalid_state);
 }
 
 TEST(NcclCommunicatorTest, AllreduceInplace) {
@@ -195,6 +196,7 @@ TEST(NcclCommunicatorTest, AllreduceInplace) {
     float buf[4] = {1.0f, 2.0f, 3.0f, 4.0f};
     auto result = comm.allreduce_inplace(buf, 4, dtl::nccl::nccl_op::sum);
     EXPECT_TRUE(result.has_error());
+    EXPECT_EQ(result.error().code(), dtl::status_code::invalid_state);
 }
 
 TEST(NcclCommunicatorTest, ReduceTemplate) {
@@ -203,6 +205,7 @@ TEST(NcclCommunicatorTest, ReduceTemplate) {
     double recv[4] = {};
     auto result = comm.reduce(send, recv, 4, 0, dtl::nccl::nccl_op::sum);
     EXPECT_TRUE(result.has_error());
+    EXPECT_EQ(result.error().code(), dtl::status_code::invalid_state);
 }
 
 TEST(NcclCommunicatorTest, ReduceScatterTemplate) {
@@ -211,6 +214,7 @@ TEST(NcclCommunicatorTest, ReduceScatterTemplate) {
     float recv[4] = {};
     auto result = comm.reduce_scatter(send, recv, 4, dtl::nccl::nccl_op::sum);
     EXPECT_TRUE(result.has_error());
+    EXPECT_EQ(result.error().code(), dtl::status_code::invalid_state);
 }
 
 TEST(NcclCommunicatorTest, BarrierNullScratchReturnsError) {
@@ -238,8 +242,8 @@ TEST(NcclCommunicatorTest, AllgatherImplOnNullComm) {
     int send_data[4] = {1, 2, 3, 4};
     int recv_data[4] = {};
     auto result = comm.allgather_impl(send_data, 4, recv_data, 4, sizeof(int));
-    // With null comm_, ncclAllGather will fail
     EXPECT_TRUE(result.has_error());
+    EXPECT_EQ(result.error().code(), dtl::status_code::invalid_state);
 }
 
 TEST(NcclCommunicatorTest, AlltoallImplOnNullComm) {
@@ -248,10 +252,8 @@ TEST(NcclCommunicatorTest, AlltoallImplOnNullComm) {
     int send_data[4] = {1, 2, 3, 4};
     int recv_data[4] = {};
     auto result = comm.alltoall_impl(send_data, recv_data, 4, sizeof(int));
-    // With null comm_ and size_==0, the loop body is never entered;
-    // ncclGroupStart/ncclGroupEnd on a null communicator context may succeed
-    // as a no-op group, or may fail. Accept either outcome.
-    SUCCEED();
+    EXPECT_TRUE(result.has_error());
+    EXPECT_EQ(result.error().code(), dtl::status_code::invalid_state);
 }
 
 TEST(NcclCommunicatorTest, ReduceScatterImplOnNullComm) {
@@ -260,8 +262,26 @@ TEST(NcclCommunicatorTest, ReduceScatterImplOnNullComm) {
     int send_data[8] = {1, 2, 3, 4, 5, 6, 7, 8};
     int recv_data[4] = {};
     auto result = comm.reduce_scatter_impl(send_data, recv_data, 4, sizeof(int));
-    // With null comm_, ncclReduceScatter will fail
     EXPECT_TRUE(result.has_error());
+    EXPECT_EQ(result.error().code(), dtl::status_code::invalid_state);
+}
+
+TEST(NcclCommunicatorTest, AllreduceLandIsUnsupported) {
+    dtl::nccl::nccl_communicator comm;
+    int send = 1;
+    int recv = 0;
+    auto result = comm.allreduce_land_impl(&send, &recv, 1);
+    EXPECT_TRUE(result.has_error());
+    EXPECT_EQ(result.error().code(), dtl::status_code::not_supported);
+}
+
+TEST(NcclCommunicatorTest, AllreduceLorIsUnsupported) {
+    dtl::nccl::nccl_communicator comm;
+    int send = 1;
+    int recv = 0;
+    auto result = comm.allreduce_lor_impl(&send, &recv, 1);
+    EXPECT_TRUE(result.has_error());
+    EXPECT_EQ(result.error().code(), dtl::status_code::not_supported);
 }
 
 TEST(NcclCommunicatorTest, AlltoallImplMethodExists) {

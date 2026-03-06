@@ -43,9 +43,6 @@
 #include <dtl/algorithms/sorting/nth_element.hpp>
 #include <dtl/algorithms/sorting/unique.hpp>
 
-// Context-aware dispatch (auto-selects NCCL or MPI from context)
-#include <dtl/algorithms/context_dispatch.hpp>
-
 // Canonical semantic domain namespaces (depends on algorithm declarations above)
 #include <dtl/algorithms/domain_namespaces.hpp>
 

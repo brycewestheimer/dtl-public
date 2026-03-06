@@ -331,7 +331,7 @@ inline result<nccl_domain> nccl_domain::from_mpi(const mpi_domain& mpi, int devi
             // Broadcast failure to all ranks (use negative size as signal)
             int failure_flag = -1;
             MPI_Bcast(&failure_flag, 1, MPI_INT, 0,
-                      const_cast<mpi::mpi_comm_adapter&>(mpi.communicator()).native_handle());
+                      const_cast<mpi::mpi_comm_adapter&>(mpi.communicator()).underlying().native_handle());
             return result<nccl_domain>::failure(id_result.error());
         }
         unique_id = *id_result;
@@ -341,17 +341,17 @@ inline result<nccl_domain> nccl_domain::from_mpi(const mpi_domain& mpi, int devi
     // First broadcast a success flag
     int success_flag = (mpi_rank == 0) ? 1 : 0;
     MPI_Bcast(&success_flag, 1, MPI_INT, 0,
-              const_cast<mpi::mpi_comm_adapter&>(mpi.communicator()).native_handle());
+              const_cast<mpi::mpi_comm_adapter&>(mpi.communicator()).underlying().native_handle());
 
     if (success_flag < 0) {
         return result<nccl_domain>::failure(
-            status{status_code::communication_failed, no_rank,
+            status{status_code::communication_error, no_rank,
                    "NCCL unique ID generation failed on rank 0"});
     }
 
     // Broadcast the actual unique ID
     MPI_Bcast(&unique_id, sizeof(ncclUniqueId), MPI_BYTE, 0,
-              const_cast<mpi::mpi_comm_adapter&>(mpi.communicator()).native_handle());
+              const_cast<mpi::mpi_comm_adapter&>(mpi.communicator()).underlying().native_handle());
 
     // Step 3: Initialize NCCL communicator on all ranks
     auto comm_result = nccl::create_communicator_from_unique_id(

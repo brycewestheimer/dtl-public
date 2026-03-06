@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 /// @file context_dispatch.hpp
-/// @brief Context-aware algorithm overloads for automatic GPU collective dispatch
-/// @details When a context with an NCCL domain is passed instead of a bare communicator,
-///          these overloads automatically extract the appropriate communicator (NCCL for
-///          GPU contexts, MPI otherwise) and forward to the underlying algorithms.
+/// @brief Context-aware algorithm overloads for explicit MPI-based collective dispatch
+/// @details These overloads extract the MPI communicator from a context and forward
+///          to the underlying generic distributed algorithms. NCCL-backed generic
+///          algorithm dispatch is intentionally not selected here because the current
+///          algorithm layer is not device-buffer-aware.
 /// @since 0.1.0
 
 #pragma once
@@ -28,30 +29,26 @@ namespace dtl {
 
 namespace detail {
 
-/// @brief Extract the best communicator adapter from a context
-/// @details Prefers NCCL adapter when available (GPU collectives),
-///          falls back to MPI adapter, then errors for CPU-only contexts.
+/// @brief Extract the generic multi-rank communicator from a context
+/// @details Generic distributed algorithms remain MPI-primary even when an NCCL
+///          domain is present in the same context.
 template <typename Ctx>
 auto& get_comm_adapter(Ctx& ctx) {
-    if constexpr (Ctx::template has<nccl_domain>()) {
-        return ctx.template get<nccl_domain>().adapter();
-    } else if constexpr (Ctx::template has<mpi_domain>()) {
+    if constexpr (Ctx::template has<mpi_domain>()) {
         return ctx.template get<mpi_domain>().communicator();
     } else {
         static_assert(Ctx::template has<mpi_domain>(),
-                      "Context must contain an MPI or NCCL domain for collective operations");
+                      "Context must contain an MPI domain for generic collective operations");
     }
 }
 
 template <typename Ctx>
 const auto& get_comm_adapter(const Ctx& ctx) {
-    if constexpr (Ctx::template has<nccl_domain>()) {
-        return ctx.template get<nccl_domain>().adapter();
-    } else if constexpr (Ctx::template has<mpi_domain>()) {
+    if constexpr (Ctx::template has<mpi_domain>()) {
         return ctx.template get<mpi_domain>().communicator();
     } else {
         static_assert(Ctx::template has<mpi_domain>(),
-                      "Context must contain an MPI or NCCL domain for collective operations");
+                      "Context must contain an MPI domain for generic collective operations");
     }
 }
 
@@ -71,7 +68,7 @@ inline constexpr bool is_context_v = is_context<std::decay_t<T>>::value;
 // Context-Aware Reduce
 // ============================================================================
 
-/// @brief Reduce with context — auto-selects NCCL or MPI communicator
+/// @brief Reduce with context using the context's MPI communicator
 template <typename ExecutionPolicy, typename Container, typename T, typename BinaryOp,
           typename Ctx>
     requires ExecutionPolicyType<ExecutionPolicy> &&

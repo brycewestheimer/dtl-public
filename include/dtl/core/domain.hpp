@@ -314,9 +314,13 @@ public:
     }
 
     /// @brief Get the concept-compliant adapter
+    /// @details The adapter is limited to explicit device-buffer communication.
+    ///          It is not a generic drop-in for host-buffer distributed algorithms.
     [[nodiscard]] nccl::nccl_comm_adapter& adapter() noexcept;
 
     /// @brief Get the concept-compliant adapter (const)
+    /// @details The adapter is limited to explicit device-buffer communication.
+    ///          It is not a generic drop-in for host-buffer distributed algorithms.
     [[nodiscard]] const nccl::nccl_comm_adapter& adapter() const noexcept;
 
     /// @brief Factory: create NCCL domain from MPI domain
@@ -331,6 +335,8 @@ public:
     /// @param device_id CUDA device ID for this rank in the new communicator
     /// @param key Ordering key within color group (default 0)
     /// @return Result containing pair of (new mpi_domain, new nccl_domain) for the sub-group
+    /// @note This API is currently C++-only. C, Python, and Fortran bindings do
+    ///       not expose an equivalent split operation.
     [[nodiscard]] static result<std::pair<mpi_domain, nccl_domain>>
     split(const mpi_domain& mpi, int color, int device_id, int key = 0);
 

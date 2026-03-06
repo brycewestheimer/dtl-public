@@ -11,6 +11,7 @@
 // Skip compilation entirely if prerequisites not met
 #if DTL_ENABLE_NCCL && DTL_ENABLE_CUDA && DTL_ENABLE_MPI
 
+#include <dtl/algorithms/context_dispatch.hpp>
 #include <dtl/core/context.hpp>
 #include <dtl/core/domain.hpp>
 #include <dtl/core/domain_impl.hpp>
@@ -19,6 +20,8 @@
 #include <mpi.h>
 
 #include <gtest/gtest.h>
+
+#include <type_traits>
 
 namespace dtl::test {
 
@@ -33,12 +36,14 @@ protected:
         }
 
         // Get MPI rank
-        int rank;
-        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-        device_id_ = rank % device_count;
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank_);
+        MPI_Comm_size(MPI_COMM_WORLD, &size_);
+        device_id_ = rank_ % device_count;
     }
 
     int device_id_ = 0;
+    int rank_ = 0;
+    int size_ = 1;
 };
 
 TEST_F(ContextWithNcclTest, CreateNcclContextFromMpiContext) {
@@ -111,10 +116,49 @@ TEST_F(ContextWithNcclTest, AllRanksSucceed) {
     int local_success = nccl_result.has_value() ? 1 : 0;
     int global_sum = 0;
     MPI_Allreduce(&local_success, &global_sum, 1, MPI_INT, MPI_SUM,
-                  ctx.get<mpi_domain>().communicator().native_handle());
+                  ctx.get<mpi_domain>().communicator().underlying().native_handle());
 
     EXPECT_EQ(global_sum, static_cast<int>(ctx.size()))
         << "All ranks should have succeeded";
+}
+
+TEST_F(ContextWithNcclTest, GenericContextDispatchRemainsMpiPrimary) {
+    mpi_context ctx;
+    ASSERT_TRUE(ctx.valid());
+
+    auto nccl_result = ctx.with_nccl(device_id_);
+    ASSERT_TRUE(nccl_result.has_value());
+
+    auto& nccl_ctx = *nccl_result;
+    auto& comm = dtl::detail::get_comm_adapter(nccl_ctx);
+
+    using actual_comm_t = std::remove_cvref_t<decltype(comm)>;
+    using expected_comm_t =
+        std::remove_cvref_t<decltype(nccl_ctx.get<mpi_domain>().communicator())>;
+    static_assert(std::is_same_v<actual_comm_t, expected_comm_t>,
+                  "generic context dispatch must remain MPI-primary");
+
+    EXPECT_EQ(&comm, &nccl_ctx.get<mpi_domain>().communicator());
+}
+
+TEST_F(ContextWithNcclTest, SplitNcclCreatesPublicCppSubcontext) {
+    mpi_context ctx;
+    ASSERT_TRUE(ctx.valid());
+    ASSERT_GE(size_, 2);
+
+    auto nccl_result = ctx.with_nccl(device_id_);
+    ASSERT_TRUE(nccl_result.has_value());
+
+    auto split_result = nccl_result->split_nccl(rank_ % 2, device_id_);
+    ASSERT_TRUE(split_result.has_value())
+        << "split_nccl should succeed for explicit C++ NCCL contexts";
+
+    auto& split_ctx = *split_result;
+    EXPECT_TRUE(split_ctx.has_mpi());
+    EXPECT_TRUE(split_ctx.has_nccl());
+    EXPECT_EQ(split_ctx.size(), 1);
+    EXPECT_EQ(split_ctx.rank(), 0);
+    EXPECT_TRUE(split_ctx.valid());
 }
 
 }  // namespace dtl::test

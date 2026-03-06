@@ -460,6 +460,15 @@ using environment_guard = environment;
     return env.make_world_context();
 }
 
+/// @brief Create a world MPI context using a process-local static environment
+/// @return context<mpi_domain, cpu_domain> for the world communicator
+/// @details Compatibility helper for tests and existing call sites that expect
+///          a no-argument MPI context factory.
+[[nodiscard]] inline mpi_context make_mpi_context() {
+    static environment env;
+    return env.make_world_context();
+}
+
 /// @brief Create a GPU-enabled world context from an environment
 /// @param env The environment to create context from
 /// @param device_id CUDA device ID to use for this rank

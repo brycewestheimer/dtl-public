@@ -391,6 +391,8 @@ public:
     /// @param key Ordering key within color group (default 0)
     /// @return Result containing new context with split MPI and NCCL domains
     /// @pre has_mpi() && has_nccl() must be true
+    /// @note This API is currently C++-only. Language bindings only expose
+    ///       `with_nccl()` at this time.
     [[nodiscard]] result<context> split_nccl(int color, int device_id, int key = 0) const
         requires (has_mpi() && has_nccl())
     {

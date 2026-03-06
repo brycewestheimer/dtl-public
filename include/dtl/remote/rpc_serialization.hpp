@@ -228,7 +228,10 @@ template <typename T>
     size_type payload_size) {
     
     if (payload_size < error_payload::base_size()) {
-        return status(status_code::serialization_error, "Malformed error payload");
+        return status(
+            status_code::serialization_error,
+            no_rank,
+            "Malformed error payload");
     }
     
     auto err = error_payload::deserialize(payload);
@@ -239,7 +242,7 @@ template <typename T>
         std::string message(
             reinterpret_cast<const char*>(payload + error_payload::base_size()),
             msg_len);
-        return status(static_cast<status_code>(err.error_code), std::move(message));
+        return status(static_cast<status_code>(err.error_code), no_rank, std::move(message));
     }
     
     return status(static_cast<status_code>(err.error_code));

@@ -78,6 +78,27 @@ if(DTL_ENABLE_NCCL AND DTL_ENABLE_CUDA AND DTL_ENABLE_MPI)
         )
         target_compile_features(test_context_with_nccl PRIVATE cxx_std_20)
 
+        # Test: NCCL adapter contract
+        add_executable(test_nccl_adapter_contract test_nccl_adapter_contract.cpp)
+        target_link_libraries(test_nccl_adapter_contract PRIVATE
+            DTL::dtl
+            DTL::nccl
+            GTest::gtest
+            MPI::MPI_CXX
+            CUDA::cudart
+            ${NCCL_LIBRARIES}
+        )
+        target_include_directories(test_nccl_adapter_contract PRIVATE
+            ${CMAKE_SOURCE_DIR}/backends
+            ${NCCL_INCLUDE_DIRS}
+        )
+        target_compile_definitions(test_nccl_adapter_contract PRIVATE
+            DTL_ENABLE_NCCL=1
+            DTL_ENABLE_CUDA=1
+            DTL_ENABLE_MPI=1
+        )
+        target_compile_features(test_nccl_adapter_contract PRIVATE cxx_std_20)
+
         # Add tests with MPI runner (2 ranks)
         add_test(
             NAME nccl_domain_from_mpi_2ranks
@@ -113,6 +134,19 @@ if(DTL_ENABLE_NCCL AND DTL_ENABLE_CUDA AND DTL_ENABLE_MPI)
                     ${MPIEXEC_POSTFLAGS}
         )
         set_tests_properties(context_with_nccl_2ranks PROPERTIES
+            LABELS "mpi;nccl;integration"
+            TIMEOUT 120
+            ENVIRONMENT "CUDA_VISIBLE_DEVICES=0,1"
+        )
+
+        add_test(
+            NAME nccl_adapter_contract_2ranks
+            COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2
+                    ${MPIEXEC_PREFLAGS}
+                    $<TARGET_FILE:test_nccl_adapter_contract>
+                    ${MPIEXEC_POSTFLAGS}
+        )
+        set_tests_properties(nccl_adapter_contract_2ranks PROPERTIES
             LABELS "mpi;nccl;integration"
             TIMEOUT 120
             ENVIRONMENT "CUDA_VISIBLE_DEVICES=0,1"
