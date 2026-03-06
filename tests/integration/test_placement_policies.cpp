@@ -53,6 +53,19 @@ concept has_local_index_access = requires(Container& container) {
 };
 
 template <typename Container>
+concept has_value_resize = requires(Container& container,
+                                    typename Container::size_type size,
+                                    typename Container::value_type value) {
+    container.resize(size, value);
+};
+
+template <typename Container>
+concept has_fill_member = requires(Container& container,
+                                   typename Container::value_type value) {
+    container.fill(value);
+};
+
+template <typename Container>
 concept has_tensor_local_index_access = requires(Container& container) {
     container.local(typename Container::index_type{});
 };
@@ -213,6 +226,8 @@ TEST_F(CudaPlacementTest, DistributedVectorDeviceOnlyAllocatesOnDevice) {
     static_assert(!has_local_view<vec_t>);
     static_assert(!has_local_index_access<vec_t>);
     static_assert(has_device_view<vec_t>);
+    static_assert(!std::is_constructible_v<vec_t, typename vec_t::size_type, const float&>);
+    static_assert(!has_value_resize<vec_t>);
 
     // Verify allocator type at compile time - now uses device-specific space
     static_assert(std::is_same_v<
@@ -255,6 +270,8 @@ TEST_F(CudaPlacementTest, DistributedVectorUnifiedMemoryAllocatesManaged) {
     static_assert(has_local_view<vec_t>);
     static_assert(has_local_index_access<vec_t>);
     static_assert(has_device_view<vec_t>);
+    static_assert(std::is_constructible_v<vec_t, typename vec_t::size_type, const float&>);
+    static_assert(has_value_resize<vec_t>);
 
     // Verify allocator type at compile time
     static_assert(std::is_same_v<
@@ -283,6 +300,18 @@ TEST_F(CudaPlacementTest, DistributedVectorUnifiedMemoryAllocatesManaged) {
     EXPECT_EQ(device_view.size(), vec.local_size());
 }
 
+TEST_F(CudaPlacementTest, DeviceOnlyGlobalViewDoesNotExposeHostFastPath) {
+    using vec_t = distributed_vector<int, device_only<0>>;
+
+    vec_t vec(16, 1, 0);
+    auto global = vec.global_view();
+    auto ref = global[0];
+
+    EXPECT_TRUE(global.is_local(0));
+    EXPECT_FALSE(ref.is_local());
+    EXPECT_TRUE(ref.get().has_error());
+}
+
 TEST_F(CudaPlacementTest, DistributedTensorDeviceOnlyAllocatesOnDevice) {
     using tensor_t = distributed_tensor<double, 2, device_only<0>>;
 
@@ -290,6 +319,13 @@ TEST_F(CudaPlacementTest, DistributedTensorDeviceOnlyAllocatesOnDevice) {
     static_assert(!has_local_span<tensor_t>);
     static_assert(!has_tensor_local_index_access<tensor_t>);
     static_assert(has_device_view<tensor_t>);
+    static_assert(!std::is_constructible_v<
+                  tensor_t,
+                  const typename tensor_t::extent_type&,
+                  typename tensor_t::size_type,
+                  rank_t,
+                  rank_t,
+                  const double&>);
 
     // Verify allocator type at compile time - now uses device-specific space
     static_assert(std::is_same_v<
@@ -322,12 +358,23 @@ TEST_F(CudaPlacementTest, DistributedTensorDeviceOnlyAllocatesOnDevice) {
     EXPECT_EQ(view.device_id(), 0);
 }
 
+TEST_F(CudaPlacementTest, DeviceOnlyTensorGlobalAccessDoesNotExposeHostFastPath) {
+    using tensor_t = distributed_tensor<int, 2, device_only<0>>;
+
+    tensor_t tensor({4, 4}, 0, 1, 0);
+    auto ref = tensor.global(typename tensor_t::index_type{0, 0});
+
+    EXPECT_FALSE(ref.is_local());
+    EXPECT_TRUE(ref.get().has_error());
+}
+
 TEST_F(CudaPlacementTest, DistributedArrayDeviceOnlyExposesDeviceViewOnly) {
     using array_t = distributed_array<int, 64, device_only<0>>;
 
     static_assert(!has_local_view<array_t>);
     static_assert(!has_local_index_access<array_t>);
     static_assert(has_device_view<array_t>);
+    static_assert(!has_fill_member<array_t>);
 
     array_t arr;
 

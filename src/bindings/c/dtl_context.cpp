@@ -23,6 +23,25 @@
 
 #ifdef DTL_HAS_CUDA
 #include <cuda_runtime.h>
+
+static dtl_status validate_cuda_device_id(int device_id) {
+    if (device_id < 0) {
+        return DTL_SUCCESS;
+    }
+
+    int device_count = 0;
+    cudaError_t err = cudaGetDeviceCount(&device_count);
+    if (err != cudaSuccess) {
+        return DTL_ERROR_BACKEND_INIT_FAILED;
+    }
+    if (device_count <= 0) {
+        return DTL_ERROR_BACKEND_UNAVAILABLE;
+    }
+    if (device_id >= device_count) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+    return DTL_SUCCESS;
+}
 #endif
 
 #ifdef DTL_HAS_NCCL
@@ -135,10 +154,21 @@ dtl_status dtl_context_create(dtl_context_t* ctx, const dtl_context_options* opt
     impl->size = 1;
 #endif
 
-    // Set CUDA flag if device is specified
+#ifdef DTL_HAS_CUDA
+    dtl_status cuda_status = validate_cuda_device_id(impl->device_id);
+    if (cuda_status != DTL_SUCCESS) {
+        dtl_context_destroy(impl);
+        return cuda_status;
+    }
     if (impl->device_id >= 0) {
         impl->domain_flags |= dtl_context_s::HAS_CUDA;
     }
+#else
+    if (impl->device_id >= 0) {
+        dtl_context_destroy(impl);
+        return DTL_ERROR_BACKEND_UNAVAILABLE;
+    }
+#endif
 
     *ctx = impl;
     return DTL_SUCCESS;
@@ -459,6 +489,17 @@ dtl_status dtl_context_with_cuda(dtl_context_t ctx, int device_id,
     if (!ctx || ctx->magic != dtl_context_s::VALID_MAGIC) {
         return DTL_ERROR_INVALID_ARGUMENT;
     }
+
+#ifdef DTL_HAS_CUDA
+    dtl_status cuda_status = validate_cuda_device_id(device_id);
+    if (cuda_status != DTL_SUCCESS) {
+        return cuda_status;
+    }
+#else
+    if (device_id >= 0) {
+        return DTL_ERROR_BACKEND_UNAVAILABLE;
+    }
+#endif
 
     // Allocate new context
     dtl_context_s* impl = nullptr;

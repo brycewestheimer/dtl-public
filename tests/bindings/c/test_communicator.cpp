@@ -195,6 +195,24 @@ TEST_F(CBindingsCommunicator, AllreduceArraySucceeds) {
     }
 }
 
+TEST_F(CBindingsCommunicator, HostAllreduceRemainsSafeWithNcclContext) {
+    dtl_context_t nccl_ctx = nullptr;
+    dtl_status create_status = dtl_context_with_nccl(ctx, /*device_id=*/0, &nccl_ctx);
+    if (create_status != DTL_SUCCESS) {
+        GTEST_SKIP() << "NCCL context unavailable in this environment";
+    }
+
+    int32_t sendbuf = 1;
+    int32_t recvbuf = 0;
+    dtl_status status = dtl_allreduce(nccl_ctx, &sendbuf, &recvbuf, 1,
+                                      DTL_DTYPE_INT32, DTL_OP_SUM);
+
+    EXPECT_EQ(status, DTL_SUCCESS);
+    EXPECT_EQ(recvbuf, size());
+
+    dtl_context_destroy(nccl_ctx);
+}
+
 // ============================================================================
 // Gather Tests
 // ============================================================================

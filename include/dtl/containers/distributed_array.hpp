@@ -20,6 +20,7 @@
 #include <dtl/views/global_view.hpp>
 #include <dtl/views/segmented_view.hpp>
 #include <dtl/memory/default_allocator.hpp>
+#include <dtl/containers/detail/storage.hpp>
 #include <dtl/core/sync_domain.hpp>
 #include <dtl/core/runtime_device_context.hpp>
 #include <dtl/containers/detail/device_affinity.hpp>
@@ -110,8 +111,8 @@ public:
     /// @brief Allocator type (selected based on placement policy)
     using allocator_type = select_allocator_t<T, placement_policy>;
 
-    /// @brief Storage type (std::vector with selected allocator for runtime local size)
-    using storage_type = std::vector<T, allocator_type>;
+    /// @brief Storage type selected by placement policy
+    using storage_type = detail::select_storage_t<T, placement_policy>;
 
     /// @brief Difference type
     using difference_type = std::ptrdiff_t;
@@ -158,7 +159,7 @@ public:
         : partition_{N, 1, 0}
         , my_rank_{0}
         , num_ranks_{1}
-        , local_data_(partition_.local_size())
+        , local_data_(make_storage(partition_.local_size()))
         , comm_handle_(handle::comm_handle::local()) {}
 
     // -------------------------------------------------------------------------
@@ -177,7 +178,7 @@ public:
         : partition_{N, ctx.size(), ctx.rank()}
         , my_rank_{ctx.rank()}
         , num_ranks_{ctx.size()}
-        , local_data_(partition_.local_size())
+        , local_data_(make_storage(partition_.local_size(), compute_device_id_from_ctx(ctx)))
         , device_id_(compute_device_id_from_ctx(ctx))
         , comm_handle_(handle::make_comm_handle(ctx)) {}
 
@@ -191,10 +192,12 @@ public:
             { c.size() } -> std::convertible_to<rank_t>;
         }
     distributed_array(const T& value, const Ctx& ctx)
+        requires (placement_policy::is_host_accessible())
         : partition_{N, ctx.size(), ctx.rank()}
         , my_rank_{ctx.rank()}
         , num_ranks_{ctx.size()}
-        , local_data_(partition_.local_size(), value)
+        , local_data_(make_filled_storage(
+              partition_.local_size(), value, compute_device_id_from_ctx(ctx)))
         , device_id_(compute_device_id_from_ctx(ctx))
         , comm_handle_(handle::make_comm_handle(ctx)) {}
 
@@ -211,7 +214,7 @@ public:
         : partition_{N, num_ranks, my_rank}
         , my_rank_{my_rank}
         , num_ranks_{num_ranks}
-        , local_data_(partition_.local_size())
+        , local_data_(make_storage(partition_.local_size()))
         , comm_handle_(num_ranks > 1
             ? handle::comm_handle::unbound(my_rank, num_ranks)
             : handle::comm_handle::local()) {}
@@ -223,10 +226,11 @@ public:
     /// @deprecated Use distributed_array(value, ctx) instead
     [[deprecated("Use distributed_array(value, ctx) instead - will be removed in V2.0.0")]]
     distributed_array(rank_t num_ranks, rank_t my_rank, const T& value)
+        requires (placement_policy::is_host_accessible())
         : partition_{N, num_ranks, my_rank}
         , my_rank_{my_rank}
         , num_ranks_{num_ranks}
-        , local_data_(partition_.local_size(), value)
+        , local_data_(make_filled_storage(partition_.local_size(), value))
         , comm_handle_(num_ranks > 1
             ? handle::comm_handle::unbound(my_rank, num_ranks)
             : handle::comm_handle::local()) {}
@@ -394,7 +398,8 @@ public:
 
     /// @brief Fill all local elements with a value
     /// @param value The value to fill with
-    void fill(const T& value) {
+    void fill(const T& value)
+        requires (placement_policy::is_host_accessible()) {
         std::fill(local_data_.begin(), local_data_.end(), value);
         sync_state_.mark_local_modified();
     }
@@ -568,10 +573,48 @@ public:
 
     /// @brief Get the allocator instance
     [[nodiscard]] allocator_type get_allocator() const noexcept {
-        return local_data_.get_allocator();
+        if constexpr (requires { local_data_.get_allocator(); }) {
+            return local_data_.get_allocator();
+        } else {
+            return allocator_type{};
+        }
     }
 
 private:
+    [[nodiscard]] static storage_type make_storage(size_type count) {
+        return make_storage(count, compute_device_id_from_policy());
+    }
+
+    [[nodiscard]] static storage_type make_storage(size_type count, int device_id) {
+        if constexpr (!placement_policy::is_host_accessible() &&
+                      requires { storage_type{count, device_id}; }) {
+            return storage_type(count, device_id);
+        } else {
+            return storage_type(count);
+        }
+    }
+
+    [[nodiscard]] static storage_type make_filled_storage(
+        size_type count,
+        const T& value)
+        requires (placement_policy::is_host_accessible()) {
+        return make_filled_storage(count, value, compute_device_id_from_policy());
+    }
+
+    [[nodiscard]] static storage_type make_filled_storage(
+        size_type count,
+        const T& value,
+        int device_id)
+        requires (placement_policy::is_host_accessible()) {
+        if constexpr (requires { storage_type{count, value}; }) {
+            return storage_type{count, value};
+        } else {
+            auto storage = make_storage(count, device_id);
+            std::fill(storage.begin(), storage.end(), value);
+            return storage;
+        }
+    }
+
     /// @brief Compute device ID from placement policy (compile-time policies)
     [[nodiscard]] static constexpr int compute_device_id_from_policy() noexcept {
         if constexpr (requires { placement_policy::device_id(); }) {

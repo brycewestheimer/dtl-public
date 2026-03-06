@@ -11,6 +11,10 @@
 #include <dtl/bindings/c/dtl_context.h>
 #include <dtl/bindings/c/dtl_status.h>
 
+#ifdef DTL_HAS_CUDA
+#include <cuda_runtime.h>
+#endif
+
 // ============================================================================
 // Context Creation Tests
 // ============================================================================
@@ -325,6 +329,37 @@ TEST(CBindingsContext, WithCuda) {
         EXPECT_EQ(dtl_context_has_cuda(cuda_ctx), 1);
         dtl_context_destroy(cuda_ctx);
     }
+
+    dtl_context_destroy(ctx);
+}
+
+TEST(CBindingsContext, WithCudaRejectsOutOfRangeDevice) {
+    dtl_context_t ctx = nullptr;
+    ASSERT_EQ(dtl_context_create_default(&ctx), DTL_SUCCESS);
+
+#ifdef DTL_HAS_CUDA
+    int device_count = 0;
+    cudaError_t err = cudaGetDeviceCount(&device_count);
+    if (err != cudaSuccess || device_count < 0) {
+        GTEST_SKIP() << "CUDA runtime not available for device validation";
+    }
+
+    const int invalid_device = device_count + 1;
+    dtl_context_t cuda_ctx = nullptr;
+    dtl_status status = dtl_context_with_cuda(ctx, invalid_device, &cuda_ctx);
+
+    if (device_count == 0) {
+        EXPECT_EQ(status, DTL_ERROR_BACKEND_UNAVAILABLE);
+    } else {
+        EXPECT_EQ(status, DTL_ERROR_INVALID_ARGUMENT);
+    }
+    EXPECT_EQ(cuda_ctx, nullptr);
+#else
+    dtl_context_t cuda_ctx = nullptr;
+    dtl_status status = dtl_context_with_cuda(ctx, /*device_id=*/0, &cuda_ctx);
+    EXPECT_EQ(status, DTL_ERROR_BACKEND_UNAVAILABLE);
+    EXPECT_EQ(cuda_ctx, nullptr);
+#endif
 
     dtl_context_destroy(ctx);
 }

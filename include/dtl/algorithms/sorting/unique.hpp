@@ -197,10 +197,9 @@ result<unique_result> unique([[maybe_unused]] ExecutionPolicy&& policy,
     const size_type my_target_size = base + ((rank_idx < rem) ? 1 : 0);
     const size_type my_target_offset = rank_idx * base + std::min(rank_idx, rem);
 
-    typename Container::storage_type rebuilt_local;
-    rebuilt_local.insert(rebuilt_local.end(),
-                         globally_unique.begin() + static_cast<std::ptrdiff_t>(my_target_offset),
-                         globally_unique.begin() + static_cast<std::ptrdiff_t>(my_target_offset + my_target_size));
+    typename Container::storage_type rebuilt_local(
+        globally_unique.begin() + static_cast<std::ptrdiff_t>(my_target_offset),
+        globally_unique.begin() + static_cast<std::ptrdiff_t>(my_target_offset + my_target_size));
 
     if constexpr (requires(Container& c, typename Container::storage_type data, size_type n) {
                       c.replace_local_partition(std::move(data), n);

@@ -110,9 +110,7 @@ public:
     [[nodiscard]] reference operator[](index_type global_idx) {
         rank_t owner_rank = owner(global_idx);
         if (owner_rank == my_rank()) {
-            // Local element - provide direct pointer
-            index_type local_idx = to_local(global_idx);
-            auto* ptr = container_->local_data() + local_idx;
+            auto* ptr = local_pointer_for(global_idx);
             if constexpr (std::is_const_v<Container>) {
                 return remote_ref<const value_type>{owner_rank, global_idx, ptr,
                     remote_transport_available_};
@@ -136,8 +134,7 @@ public:
     [[nodiscard]] const_reference operator[](index_type global_idx) const {
         rank_t owner_rank = owner(global_idx);
         if (owner_rank == my_rank()) {
-            index_type local_idx = to_local(global_idx);
-            const value_type* ptr = container_->local_data() + local_idx;
+            const value_type* ptr = local_pointer_for(global_idx);
             return remote_ref<const value_type>{owner_rank, global_idx, ptr,
                 remote_transport_available_};
         } else {
@@ -243,6 +240,26 @@ public:
     }
 
 private:
+    [[nodiscard]] static constexpr bool supports_host_local_fast_path() noexcept {
+        using container_type = std::remove_cv_t<Container>;
+        if constexpr (requires { container_type::is_host_accessible(); }) {
+            return container_type::is_host_accessible();
+        } else {
+            return true;
+        }
+    }
+
+    [[nodiscard]] auto local_pointer_for(index_type global_idx) const noexcept {
+        if constexpr (supports_host_local_fast_path()) {
+            index_type local_idx = to_local(global_idx);
+            return container_->local_data() + local_idx;
+        } else {
+            return static_cast<std::conditional_t<std::is_const_v<Container>,
+                                                 const value_type*,
+                                                 value_type*>>(nullptr);
+        }
+    }
+
     Container* container_;
     bool remote_transport_available_;
 };

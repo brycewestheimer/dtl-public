@@ -22,6 +22,7 @@
 #include <dtl/views/global_view.hpp>
 #include <dtl/views/segmented_view.hpp>
 #include <dtl/memory/default_allocator.hpp>
+#include <dtl/containers/detail/storage.hpp>
 #include <dtl/containers/detail/device_affinity.hpp>
 
 #include <memory>
@@ -117,8 +118,8 @@ public:
     /// @brief Allocator type (selected based on placement policy)
     using allocator_type = select_allocator_t<T, placement_policy>;
 
-    /// @brief Storage type (std::vector with selected allocator)
-    using storage_type = std::vector<T, allocator_type>;
+    /// @brief Storage type selected by placement policy
+    using storage_type = detail::select_storage_t<T, placement_policy>;
 
     /// @brief Size type
     using size_type = dtl::size_type;
@@ -183,7 +184,7 @@ public:
         : partition_{global_size, 1, 0}
         , my_rank_{0}
         , num_ranks_{1}
-        , local_data_(global_size)
+        , local_data_(make_storage(global_size))
         , comm_handle_(handle::comm_handle::local()) {}
 
     /// @brief Construct for single-rank use (no context needed)
@@ -191,10 +192,11 @@ public:
     /// @param value Initial value for all elements
     /// @note Equivalent to distributed_vector(global_size, value, single_rank_context{})
     distributed_vector(size_type global_size, const T& value)
+        requires (placement_policy::is_host_accessible())
         : partition_{global_size, 1, 0}
         , my_rank_{0}
         , num_ranks_{1}
-        , local_data_(global_size, value)
+        , local_data_(make_filled_storage(global_size, value))
         , comm_handle_(handle::comm_handle::local()) {}
 
     // -------------------------------------------------------------------------
@@ -218,7 +220,7 @@ public:
         : partition_{global_size, ctx.size(), ctx.rank()}
         , my_rank_{ctx.rank()}
         , num_ranks_{ctx.size()}
-        , local_data_(partition_.local_size())
+        , local_data_(make_storage(partition_.local_size(), compute_device_id_from_ctx(ctx)))
         , device_id_(compute_device_id_from_ctx(ctx))
         , comm_handle_(handle::make_comm_handle(ctx)) {}
 
@@ -233,10 +235,12 @@ public:
             { c.size() } -> std::convertible_to<rank_t>;
         }
     distributed_vector(size_type global_size, const T& value, const Ctx& ctx)
+        requires (placement_policy::is_host_accessible())
         : partition_{global_size, ctx.size(), ctx.rank()}
         , my_rank_{ctx.rank()}
         , num_ranks_{ctx.size()}
-        , local_data_(partition_.local_size(), value)
+        , local_data_(make_filled_storage(
+              partition_.local_size(), value, compute_device_id_from_ctx(ctx)))
         , device_id_(compute_device_id_from_ctx(ctx))
         , comm_handle_(handle::make_comm_handle(ctx)) {}
 
@@ -254,7 +258,7 @@ public:
         : partition_{global_size, num_ranks, my_rank}
         , my_rank_{my_rank}
         , num_ranks_{num_ranks}
-        , local_data_(partition_.local_size())
+        , local_data_(make_storage(partition_.local_size()))
         , comm_handle_(num_ranks > 1
             ? handle::comm_handle::unbound(my_rank, num_ranks)
             : handle::comm_handle::local()) {}
@@ -267,10 +271,11 @@ public:
     /// @deprecated Use distributed_vector(global_size, value, ctx) instead
     [[deprecated("Use distributed_vector(global_size, value, ctx) instead - will be removed in V2.0.0")]]
     distributed_vector(size_type global_size, rank_t num_ranks, rank_t my_rank, const T& value)
+        requires (placement_policy::is_host_accessible())
         : partition_{global_size, num_ranks, my_rank}
         , my_rank_{my_rank}
         , num_ranks_{num_ranks}
-        , local_data_(partition_.local_size(), value)
+        , local_data_(make_filled_storage(partition_.local_size(), value))
         , comm_handle_(num_ranks > 1
             ? handle::comm_handle::unbound(my_rank, num_ranks)
             : handle::comm_handle::local()) {}
@@ -472,7 +477,8 @@ public:
     /// @param new_size New global size
     /// @param value Value for new elements
     /// @return Result indicating success or error
-    result<void> resize(size_type new_size, const T& value) {
+    result<void> resize(size_type new_size, const T& value)
+        requires (placement_policy::is_host_accessible()) {
         if (num_ranks_ > 1 && !comm_handle_.has_collective_path()) {
             return result<void>::failure(status{
                 status_code::invalid_state,
@@ -612,6 +618,14 @@ public:
     ///       partition policy for now.
     template <typename NewPartition, typename Communicator>
     result<void> redistribute_with_comm(Communicator& comm) {
+        if constexpr (!placement_policy::is_host_accessible()) {
+            return result<void>::failure(
+                status{
+                    status_code::not_supported,
+                    no_rank,
+                    "redistribute_with_comm is not yet supported for device-only placement"});
+        }
+
         if (num_ranks_ <= 1) {
             return result<void>::success();
         }
@@ -669,7 +683,7 @@ public:
 
             // Allocate receive buffer
             size_type new_local_size = new_partition.local_size();
-            std::vector<T, allocator_type> new_local_data(new_local_size);
+            storage_type new_local_data = make_storage(new_local_size, device_id_);
 
             // Exchange data
             comm.alltoallv(send_flat.data(), send_counts.data(), send_displs.data(),
@@ -814,6 +828,13 @@ public:
     result<void> sync_halo_with_comm(Communicator& comm, size_type halo_width,
                                      T* left_halo_recv = nullptr,
                                      T* right_halo_recv = nullptr) {
+        if constexpr (!placement_policy::is_host_accessible()) {
+            return result<void>::failure(status{
+                status_code::not_supported,
+                no_rank,
+                "sync_halo_with_comm is not supported for device-only placement"});
+        }
+
         // Single rank or no halo: no-op
         if (num_ranks_ <= 1 || halo_width == 0 || local_data_.empty()) {
             if (sync_state_.domain() == sync_domain::halo) {
@@ -938,10 +959,48 @@ public:
 
     /// @brief Get the allocator instance
     [[nodiscard]] allocator_type get_allocator() const noexcept {
-        return local_data_.get_allocator();
+        if constexpr (requires { local_data_.get_allocator(); }) {
+            return local_data_.get_allocator();
+        } else {
+            return allocator_type{};
+        }
     }
 
 private:
+    [[nodiscard]] static storage_type make_storage(size_type count) {
+        return make_storage(count, compute_device_id_from_policy());
+    }
+
+    [[nodiscard]] static storage_type make_storage(size_type count, int device_id) {
+        if constexpr (!placement_policy::is_host_accessible() &&
+                      requires { storage_type{count, device_id}; }) {
+            return storage_type(count, device_id);
+        } else {
+            return storage_type(count);
+        }
+    }
+
+    [[nodiscard]] static storage_type make_filled_storage(
+        size_type count,
+        const T& value)
+        requires (placement_policy::is_host_accessible()) {
+        return make_filled_storage(count, value, compute_device_id_from_policy());
+    }
+
+    [[nodiscard]] static storage_type make_filled_storage(
+        size_type count,
+        const T& value,
+        int device_id)
+        requires (placement_policy::is_host_accessible()) {
+        if constexpr (requires { storage_type{count, value}; }) {
+            return storage_type{count, value};
+        } else {
+            auto storage = make_storage(count, device_id);
+            std::fill(storage.begin(), storage.end(), value);
+            return storage;
+        }
+    }
+
     /// @brief Compute device ID from placement policy (compile-time policies)
     [[nodiscard]] static constexpr int compute_device_id_from_policy() noexcept {
         if constexpr (requires { placement_policy::device_id(); }) {

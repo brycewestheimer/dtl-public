@@ -135,7 +135,11 @@ static bool nccl_supports_reduce_op(dtl_reduce_op op) {
 }
 
 static bool use_nccl(dtl_context_t ctx) {
+    // The generic C communicator API does not encode the device-buffer
+    // preconditions required by NCCL. Keep these entry points MPI-primary
+    // until the C bindings expose an explicit device-collective contract.
     return (ctx->domain_flags & dtl_context_s::HAS_NCCL)
+        && !(ctx->domain_flags & dtl_context_s::HAS_MPI)
         && ctx->nccl_comm != nullptr;
 }
 

@@ -21,6 +21,7 @@
 #include <dtl/views/segmented_view.hpp>
 #include <dtl/views/remote_ref.hpp>
 #include <dtl/memory/default_allocator.hpp>
+#include <dtl/containers/detail/storage.hpp>
 #include <dtl/core/sync_domain.hpp>
 #include <dtl/core/runtime_device_context.hpp>
 #include <dtl/containers/detail/device_affinity.hpp>
@@ -307,8 +308,8 @@ public:
     /// @brief Allocator type (selected based on placement policy)
     using allocator_type = select_allocator_t<T, placement_policy>;
 
-    /// @brief Storage type (std::vector with selected allocator)
-    using storage_type = std::vector<T, allocator_type>;
+    /// @brief Storage type selected by placement policy
+    using storage_type = detail::select_storage_t<T, placement_policy>;
 
     /// @brief ND index type
     using index_type = nd_index<Rank>;
@@ -394,7 +395,7 @@ public:
         : partition_{extents, partition_dim, ctx.size(), ctx.rank()}
         , my_rank_{ctx.rank()}
         , num_ranks_{ctx.size()}
-        , local_data_(partition_.local_size())
+        , local_data_(make_storage(partition_.local_size(), compute_device_id_from_ctx(ctx)))
         , device_id_(compute_device_id_from_ctx(ctx))
         , comm_handle_(handle::make_comm_handle(ctx)) {}
 
@@ -411,10 +412,12 @@ public:
         }
     distributed_tensor(const extent_type& extents, const T& value, const Ctx& ctx,
                        size_type partition_dim = 0)
+        requires (placement_policy::is_host_accessible())
         : partition_{extents, partition_dim, ctx.size(), ctx.rank()}
         , my_rank_{ctx.rank()}
         , num_ranks_{ctx.size()}
-        , local_data_(partition_.local_size(), value)
+        , local_data_(make_filled_storage(
+              partition_.local_size(), value, compute_device_id_from_ctx(ctx)))
         , device_id_(compute_device_id_from_ctx(ctx))
         , comm_handle_(handle::make_comm_handle(ctx)) {}
 
@@ -434,7 +437,7 @@ public:
         : partition_{extents, partition_dim, num_ranks, my_rank}
         , my_rank_{my_rank}
         , num_ranks_{num_ranks}
-        , local_data_(partition_.local_size())
+        , local_data_(make_storage(partition_.local_size()))
         , comm_handle_(num_ranks > 1
             ? handle::comm_handle::unbound(my_rank, num_ranks)
             : handle::comm_handle::local()) {}
@@ -458,10 +461,11 @@ public:
     [[deprecated("Use distributed_tensor(extents, value, ctx, partition_dim) instead - will be removed in V2.0.0")]]
     distributed_tensor(const extent_type& extents, size_type partition_dim,
                        rank_t num_ranks, rank_t my_rank, const T& value)
+        requires (placement_policy::is_host_accessible())
         : partition_{extents, partition_dim, num_ranks, my_rank}
         , my_rank_{my_rank}
         , num_ranks_{num_ranks}
-        , local_data_(partition_.local_size(), value)
+        , local_data_(make_filled_storage(partition_.local_size(), value))
         , comm_handle_(num_ranks > 1
             ? handle::comm_handle::unbound(my_rank, num_ranks)
             : handle::comm_handle::local()) {}
@@ -613,10 +617,13 @@ public:
         rank_t owner_rank = partition_.owner(global_idx);
         index_t linear = layout_type::linearize(global_idx, partition_.global_extents());
         if (owner_rank == my_rank_) {
-            auto local_idx = partition_.to_local(global_idx);
-            pointer ptr = local_data_.data()
-                        + static_cast<size_type>(layout_type::linearize(
-                              local_idx, partition_.local_extents()));
+            pointer ptr = nullptr;
+            if constexpr (placement_policy::is_host_accessible()) {
+                auto local_idx = partition_.to_local(global_idx);
+                ptr = local_data_.data()
+                    + static_cast<size_type>(layout_type::linearize(
+                          local_idx, partition_.local_extents()));
+            }
             return remote_ref<T>{owner_rank, linear, ptr};
         } else {
             return remote_ref<T>{owner_rank, linear, nullptr};
@@ -628,10 +635,13 @@ public:
         rank_t owner_rank = partition_.owner(global_idx);
         index_t linear = layout_type::linearize(global_idx, partition_.global_extents());
         if (owner_rank == my_rank_) {
-            auto local_idx = partition_.to_local(global_idx);
-            const_pointer ptr = local_data_.data()
-                              + static_cast<size_type>(layout_type::linearize(
-                                    local_idx, partition_.local_extents()));
+            const_pointer ptr = nullptr;
+            if constexpr (placement_policy::is_host_accessible()) {
+                auto local_idx = partition_.to_local(global_idx);
+                ptr = local_data_.data()
+                    + static_cast<size_type>(layout_type::linearize(
+                          local_idx, partition_.local_extents()));
+            }
             return remote_ref<const T>{owner_rank, linear, ptr};
         } else {
             return remote_ref<const T>{owner_rank, linear, nullptr};
@@ -981,10 +991,48 @@ public:
 
     /// @brief Get the allocator instance
     [[nodiscard]] allocator_type get_allocator() const noexcept {
-        return local_data_.get_allocator();
+        if constexpr (requires { local_data_.get_allocator(); }) {
+            return local_data_.get_allocator();
+        } else {
+            return allocator_type{};
+        }
     }
 
 private:
+    [[nodiscard]] static storage_type make_storage(size_type count) {
+        return make_storage(count, compute_device_id_from_policy());
+    }
+
+    [[nodiscard]] static storage_type make_storage(size_type count, int device_id) {
+        if constexpr (!placement_policy::is_host_accessible() &&
+                      requires { storage_type{count, device_id}; }) {
+            return storage_type(count, device_id);
+        } else {
+            return storage_type(count);
+        }
+    }
+
+    [[nodiscard]] static storage_type make_filled_storage(
+        size_type count,
+        const T& value)
+        requires (placement_policy::is_host_accessible()) {
+        return make_filled_storage(count, value, compute_device_id_from_policy());
+    }
+
+    [[nodiscard]] static storage_type make_filled_storage(
+        size_type count,
+        const T& value,
+        int device_id)
+        requires (placement_policy::is_host_accessible()) {
+        if constexpr (requires { storage_type{count, value}; }) {
+            return storage_type{count, value};
+        } else {
+            auto storage = make_storage(count, device_id);
+            std::fill(storage.begin(), storage.end(), value);
+            return storage;
+        }
+    }
+
     /// @brief Compute device ID from placement policy (compile-time policies)
     [[nodiscard]] static constexpr int compute_device_id_from_policy() noexcept {
         if constexpr (requires { placement_policy::device_id(); }) {

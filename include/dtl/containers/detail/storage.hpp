@@ -26,7 +26,10 @@
 
 #include <vector>
 #include <algorithm>
+#include <concepts>
 #include <cstring>
+#include <initializer_list>
+#include <iterator>
 
 namespace dtl {
 namespace detail {
@@ -103,8 +106,13 @@ public:
     host_storage(size_type n, const T& value)
         : data_(n, value) {}
 
-    explicit host_storage(size_type n, int /*device_id*/)
-        : data_(n) {}  // Device ID ignored for host storage
+    template <typename InputIt>
+        requires (!std::integral<InputIt>)
+    host_storage(InputIt first, InputIt last)
+        : data_(first, last) {}
+
+    host_storage(std::initializer_list<T> init)
+        : data_(init) {}
 
     // ========================================================================
     // Accessors
@@ -132,6 +140,7 @@ public:
     void reserve(size_type n) { data_.reserve(n); }
     void clear() noexcept { data_.clear(); }
     void shrink_to_fit() { data_.shrink_to_fit(); }
+    void swap(host_storage& other) noexcept { data_.swap(other.data_); }
 
     // ========================================================================
     // Iterators
@@ -204,6 +213,7 @@ public:
     void resize(size_type n) { buffer_.resize(n); }
     void reserve(size_type n) { buffer_.reserve(n); }
     void clear() noexcept { buffer_.clear(); }
+    void swap(device_storage& other) noexcept { buffer_.swap(other.buffer_); }
 
     /// @brief Zero-fill the storage
     void zero_fill() { buffer_.memset(0); }
@@ -263,8 +273,13 @@ public:
     unified_storage(size_type n, const T& value)
         : data_(n, value) {}
 
-    explicit unified_storage(size_type n, int /*device_id*/)
-        : data_(n) {}  // Device ID less relevant for unified memory
+    template <typename InputIt>
+        requires (!std::integral<InputIt>)
+    unified_storage(InputIt first, InputIt last)
+        : data_(first, last) {}
+
+    unified_storage(std::initializer_list<T> init)
+        : data_(init) {}
 
     // ========================================================================
     // Accessors
@@ -291,6 +306,7 @@ public:
     void resize(size_type n, const T& value) { data_.resize(n, value); }
     void reserve(size_type n) { data_.reserve(n); }
     void clear() noexcept { data_.clear(); }
+    void swap(unified_storage& other) noexcept { data_.swap(other.data_); }
 
     // ========================================================================
     // Iterators
