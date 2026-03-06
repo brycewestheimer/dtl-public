@@ -101,6 +101,17 @@ TEST(DomainTest, NcclDomainDefaultConstruction) {
     EXPECT_EQ(nccl.size(), 1);
 }
 
+TEST(DomainTest, NcclDomainModeAndCapabilityQueries) {
+    nccl_domain nccl;
+    EXPECT_EQ(nccl.mode(), nccl_operation_mode::hybrid_parity);
+    EXPECT_FALSE(nccl.supports_native(nccl_operation::scan));
+#if DTL_ENABLE_NCCL
+    EXPECT_TRUE(nccl.supports_hybrid(nccl_operation::scan));
+#else
+    EXPECT_FALSE(nccl.supports_hybrid(nccl_operation::scan));
+#endif
+}
+
 TEST(DomainTest, NcclDomainTagType) {
     static_assert(std::is_same_v<nccl_domain::tag_type, nccl_domain_tag>);
     EXPECT_TRUE(true);

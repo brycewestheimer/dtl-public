@@ -38,10 +38,19 @@ protected:
         if (device_count <= 0) {
             GTEST_SKIP() << "No CUDA devices available";
         }
+
+        // Keep algorithm tests deterministic by pinning to device 0.
+        // Other CUDA suites may leave a different active device in thread-local state.
+        cudaError_t set_err = cudaSetDevice(0);
+        if (set_err != cudaSuccess) {
+            GTEST_SKIP() << "Unable to set CUDA device 0: " << cudaGetErrorString(set_err);
+        }
+        (void)cudaGetLastError();  // Clear any stale async error state.
     }
 
     void TearDown() override {
         cudaDeviceSynchronize();
+        (void)cudaGetLastError();  // Prevent cross-test contamination from async failures.
     }
 
     /// @brief Allocate device memory for type T

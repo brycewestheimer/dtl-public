@@ -14,6 +14,10 @@
 #include <vector>
 #include <numeric>
 
+#ifdef DTL_HAS_CUDA
+#include <cuda_runtime.h>
+#endif
+
 // ============================================================================
 // Test Fixture
 // ============================================================================
@@ -212,6 +216,61 @@ TEST_F(CBindingsCommunicator, HostAllreduceRemainsSafeWithNcclContext) {
 
     dtl_context_destroy(nccl_ctx);
 }
+
+#ifdef DTL_HAS_CUDA
+TEST_F(CBindingsCommunicator, ExplicitNcclAllreduceDeviceHybridSupportsLogicalReduction) {
+    dtl_context_t nccl_ctx = nullptr;
+    dtl_status create_status = dtl_context_with_nccl_ex(
+        ctx, /*device_id=*/0, DTL_NCCL_MODE_HYBRID_PARITY, &nccl_ctx);
+    if (create_status != DTL_SUCCESS) {
+        GTEST_SKIP() << "NCCL context unavailable in this environment";
+    }
+
+    const int32_t h_send = (rank() == 0) ? 1 : 0;
+    int32_t h_recv = 0;
+    int32_t* d_send = nullptr;
+    int32_t* d_recv = nullptr;
+    ASSERT_EQ(cudaMalloc(&d_send, sizeof(int32_t)), cudaSuccess);
+    ASSERT_EQ(cudaMalloc(&d_recv, sizeof(int32_t)), cudaSuccess);
+    ASSERT_EQ(cudaMemcpy(d_send, &h_send, sizeof(int32_t), cudaMemcpyHostToDevice), cudaSuccess);
+
+    dtl_status status = dtl_nccl_allreduce_device_ex(
+        nccl_ctx, d_send, d_recv, 1, DTL_DTYPE_INT32, DTL_OP_LOR,
+        DTL_NCCL_MODE_HYBRID_PARITY);
+    EXPECT_EQ(status, DTL_SUCCESS);
+    ASSERT_EQ(cudaMemcpy(&h_recv, d_recv, sizeof(int32_t), cudaMemcpyDeviceToHost), cudaSuccess);
+    EXPECT_EQ(h_recv, 1);
+
+    cudaFree(d_send);
+    cudaFree(d_recv);
+    dtl_context_destroy(nccl_ctx);
+}
+
+TEST_F(CBindingsCommunicator, ExplicitNcclScanDeviceNativeOnlyRejectsHybridOps) {
+    dtl_context_t nccl_ctx = nullptr;
+    dtl_status create_status = dtl_context_with_nccl_ex(
+        ctx, /*device_id=*/0, DTL_NCCL_MODE_NATIVE_ONLY, &nccl_ctx);
+    if (create_status != DTL_SUCCESS) {
+        GTEST_SKIP() << "NCCL context unavailable in this environment";
+    }
+
+    int32_t h_send = rank() + 1;
+    int32_t* d_send = nullptr;
+    int32_t* d_recv = nullptr;
+    ASSERT_EQ(cudaMalloc(&d_send, sizeof(int32_t)), cudaSuccess);
+    ASSERT_EQ(cudaMalloc(&d_recv, sizeof(int32_t)), cudaSuccess);
+    ASSERT_EQ(cudaMemcpy(d_send, &h_send, sizeof(int32_t), cudaMemcpyHostToDevice), cudaSuccess);
+
+    dtl_status status = dtl_nccl_scan_device_ex(
+        nccl_ctx, d_send, d_recv, 1, DTL_DTYPE_INT32, DTL_OP_SUM,
+        DTL_NCCL_MODE_NATIVE_ONLY);
+    EXPECT_EQ(status, DTL_ERROR_NOT_SUPPORTED);
+
+    cudaFree(d_send);
+    cudaFree(d_recv);
+    dtl_context_destroy(nccl_ctx);
+}
+#endif
 
 // ============================================================================
 // Gather Tests

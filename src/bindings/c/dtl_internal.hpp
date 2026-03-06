@@ -71,6 +71,7 @@ struct dtl_context_s {
     void* cuda_stream;     // cudaStream_t for NCCL operations
     void* barrier_scratch; // GPU scratch buffer for NCCL barrier
 #endif
+    int nccl_mode;         // dtl_nccl_operation_mode
     int device_id;
     int determinism_mode;
     int reduction_schedule_policy;

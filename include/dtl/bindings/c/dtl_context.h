@@ -271,6 +271,34 @@ DTL_API int dtl_context_has_cuda(dtl_context_t ctx);
 DTL_API int dtl_context_has_nccl(dtl_context_t ctx);
 
 /**
+ * @brief Get NCCL operation mode for this context
+ *
+ * @param ctx The context
+ * @return dtl_nccl_operation_mode value, or -1 if invalid/no NCCL domain
+ */
+DTL_API int dtl_context_nccl_mode(dtl_context_t ctx);
+
+/**
+ * @brief Query whether an operation has NCCL-native support
+ *
+ * @param ctx The context
+ * @param op Operation family to query
+ * @return 1 if supported natively, 0 otherwise
+ */
+DTL_API int dtl_context_nccl_supports_native(dtl_context_t ctx,
+                                             dtl_nccl_operation op);
+
+/**
+ * @brief Query whether an operation is supported in hybrid parity mode
+ *
+ * @param ctx The context
+ * @param op Operation family to query
+ * @return 1 if hybrid path is available for this context/mode, 0 otherwise
+ */
+DTL_API int dtl_context_nccl_supports_hybrid(dtl_context_t ctx,
+                                             dtl_nccl_operation op);
+
+/**
  * @brief Check if context has SHMEM domain
  *
  * @param ctx The context
@@ -345,6 +373,22 @@ DTL_API dtl_status dtl_context_with_nccl(dtl_context_t ctx, int device_id,
                                            dtl_context_t* out);
 
 /**
+ * @brief Add NCCL domain with explicit mode selection
+ *
+ * @param[in] ctx Source context (must have MPI domain)
+ * @param[in] device_id CUDA device ID to use for NCCL
+ * @param[in] mode NCCL operation mode (native_only or hybrid_parity)
+ * @param[out] out Pointer to receive the new context handle
+ * @return DTL_SUCCESS on success, error code otherwise
+ *
+ * @pre ctx must be a valid context with MPI domain
+ * @pre out must not be NULL
+ */
+DTL_API dtl_status dtl_context_with_nccl_ex(dtl_context_t ctx, int device_id,
+                                            dtl_nccl_operation_mode mode,
+                                            dtl_context_t* out);
+
+/**
  * @brief Split context creating sub-groups with NCCL communicators
  *
  * Creates a new context with both a split MPI communicator and a new
@@ -366,6 +410,23 @@ DTL_API dtl_status dtl_context_with_nccl(dtl_context_t ctx, int device_id,
 DTL_API dtl_status dtl_context_split_nccl(dtl_context_t ctx,
                                             int color, int key,
                                             dtl_context_t* out);
+
+/**
+ * @brief Split context and create NCCL communicator with explicit mode/device
+ *
+ * @param[in] ctx Source context (must have MPI and NCCL domains)
+ * @param[in] color Color for grouping (ranks with same color in same group)
+ * @param[in] key Ordering key within color group
+ * @param[in] device_id CUDA device ID for the split NCCL communicator
+ * @param[in] mode NCCL operation mode (native_only or hybrid_parity)
+ * @param[out] out Pointer to receive the new context handle
+ * @return DTL_SUCCESS on success, error code otherwise
+ */
+DTL_API dtl_status dtl_context_split_nccl_ex(dtl_context_t ctx,
+                                             int color, int key,
+                                             int device_id,
+                                             dtl_nccl_operation_mode mode,
+                                             dtl_context_t* out);
 
 DTL_C_END
 

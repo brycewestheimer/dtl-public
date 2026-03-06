@@ -64,6 +64,25 @@ __all__ = [
     "EXEC_SEQ",
     "EXEC_PAR",
     "EXEC_ASYNC",
+    # NCCL mode/operation constants
+    "DTL_NCCL_MODE_NATIVE_ONLY",
+    "DTL_NCCL_MODE_HYBRID_PARITY",
+    "DTL_NCCL_OP_POINT_TO_POINT",
+    "DTL_NCCL_OP_BARRIER",
+    "DTL_NCCL_OP_BROADCAST",
+    "DTL_NCCL_OP_REDUCE",
+    "DTL_NCCL_OP_ALLREDUCE",
+    "DTL_NCCL_OP_GATHER",
+    "DTL_NCCL_OP_SCATTER",
+    "DTL_NCCL_OP_ALLGATHER",
+    "DTL_NCCL_OP_ALLTOALL",
+    "DTL_NCCL_OP_GATHERV",
+    "DTL_NCCL_OP_SCATTERV",
+    "DTL_NCCL_OP_ALLGATHERV",
+    "DTL_NCCL_OP_ALLTOALLV",
+    "DTL_NCCL_OP_SCAN",
+    "DTL_NCCL_OP_EXSCAN",
+    "DTL_NCCL_OP_LOGICAL_REDUCTION",
     # Policy utilities
     "placement_available",
     # Collective operations
@@ -255,6 +274,28 @@ EXEC_SEQ = _dtl.EXEC_SEQ
 EXEC_PAR = _dtl.EXEC_PAR
 EXEC_ASYNC = _dtl.EXEC_ASYNC
 
+# NCCL mode constants
+DTL_NCCL_MODE_NATIVE_ONLY = _dtl.DTL_NCCL_MODE_NATIVE_ONLY
+DTL_NCCL_MODE_HYBRID_PARITY = _dtl.DTL_NCCL_MODE_HYBRID_PARITY
+
+# NCCL operation constants
+DTL_NCCL_OP_POINT_TO_POINT = _dtl.DTL_NCCL_OP_POINT_TO_POINT
+DTL_NCCL_OP_BARRIER = _dtl.DTL_NCCL_OP_BARRIER
+DTL_NCCL_OP_BROADCAST = _dtl.DTL_NCCL_OP_BROADCAST
+DTL_NCCL_OP_REDUCE = _dtl.DTL_NCCL_OP_REDUCE
+DTL_NCCL_OP_ALLREDUCE = _dtl.DTL_NCCL_OP_ALLREDUCE
+DTL_NCCL_OP_GATHER = _dtl.DTL_NCCL_OP_GATHER
+DTL_NCCL_OP_SCATTER = _dtl.DTL_NCCL_OP_SCATTER
+DTL_NCCL_OP_ALLGATHER = _dtl.DTL_NCCL_OP_ALLGATHER
+DTL_NCCL_OP_ALLTOALL = _dtl.DTL_NCCL_OP_ALLTOALL
+DTL_NCCL_OP_GATHERV = _dtl.DTL_NCCL_OP_GATHERV
+DTL_NCCL_OP_SCATTERV = _dtl.DTL_NCCL_OP_SCATTERV
+DTL_NCCL_OP_ALLGATHERV = _dtl.DTL_NCCL_OP_ALLGATHERV
+DTL_NCCL_OP_ALLTOALLV = _dtl.DTL_NCCL_OP_ALLTOALLV
+DTL_NCCL_OP_SCAN = _dtl.DTL_NCCL_OP_SCAN
+DTL_NCCL_OP_EXSCAN = _dtl.DTL_NCCL_OP_EXSCAN
+DTL_NCCL_OP_LOGICAL_REDUCTION = _dtl.DTL_NCCL_OP_LOGICAL_REDUCTION
+
 
 def placement_available(policy) -> bool:
     """Check if a placement policy is available.
@@ -395,6 +436,19 @@ class Context:
         return self._ctx.has_nccl
 
     @property
+    def nccl_mode(self) -> int:
+        """NCCL operation mode, or -1 if NCCL is not present."""
+        return int(self._ctx.nccl_mode)
+
+    def nccl_supports_native(self, op: int) -> bool:
+        """Return True if `op` is natively supported by NCCL."""
+        return bool(self._ctx.nccl_supports_native(int(op)))
+
+    def nccl_supports_hybrid(self, op: int) -> bool:
+        """Return True if `op` is supported under hybrid parity mode."""
+        return bool(self._ctx.nccl_supports_hybrid(int(op)))
+
+    @property
     def has_shmem(self) -> bool:
         """True if SHMEM domain is available."""
         return self._ctx.has_shmem
@@ -477,11 +531,17 @@ class Context:
         new_native = self._ctx.with_cuda(device_id)
         return Context(_native=new_native)
 
-    def with_nccl(self, device_id: int) -> "Context":
+    def with_nccl(
+        self,
+        device_id: int,
+        mode: int = DTL_NCCL_MODE_HYBRID_PARITY,
+    ) -> "Context":
         """Create new context with NCCL domain added.
 
         Args:
             device_id: CUDA device ID for NCCL communication
+            mode: NCCL mode (`DTL_NCCL_MODE_NATIVE_ONLY` or
+                `DTL_NCCL_MODE_HYBRID_PARITY`)
 
         Returns:
             New Context with NCCL domain enabled.
@@ -494,7 +554,28 @@ class Context:
             >>> nccl_ctx = ctx.with_nccl(device_id=0)
             >>> print(nccl_ctx.has_nccl)  # True
         """
-        new_native = self._ctx.with_nccl(device_id)
+        new_native = self._ctx.with_nccl(device_id, mode)
+        return Context(_native=new_native)
+
+    def split_nccl(
+        self,
+        color: int,
+        key: int = 0,
+        device_id: int | None = None,
+        mode: int = DTL_NCCL_MODE_HYBRID_PARITY,
+    ) -> "Context":
+        """Split context and create NCCL communicators for each subgroup.
+
+        Args:
+            color: Color for grouping (ranks with same color form a group)
+            key: Ordering key within color group (default: 0)
+            device_id: CUDA device ID for the split NCCL communicator.
+                Defaults to this context's `device_id`.
+            mode: NCCL mode (`DTL_NCCL_MODE_NATIVE_ONLY` or
+                `DTL_NCCL_MODE_HYBRID_PARITY`)
+        """
+        effective_device = self.device_id if device_id is None else int(device_id)
+        new_native = self._ctx.split_nccl(color, key, effective_device, mode)
         return Context(_native=new_native)
 
     # =========================================================================
@@ -3378,4 +3459,3 @@ def when_any(futures: list):
                 result.set((idx, fut.get(None)))
                 return result
         time.sleep(0.001)
-

@@ -33,8 +33,8 @@ cmake -DDTL_ENABLE_NCCL=ON -DDTL_ENABLE_CUDA=ON -DDTL_ENABLE_MPI=ON ..
 ### What Is Supported
 
 - `nccl_domain::from_mpi(...)`
-- `context::with_nccl(device_id)`
-- `context::split_nccl(...)` as a C++-only API
+- `context::with_nccl(device_id[, mode])`
+- `context::split_nccl(...[, mode])`
 - Explicit `nccl_domain::adapter()` access
 - Device-buffer point-to-point operations (`send`/`recv`, `isend`/`irecv`)
 - Device-buffer collectives:
@@ -100,8 +100,8 @@ Important:
 - Context rank/size queries remain MPI-oriented for generic distributed code.
 - Having an NCCL domain in a context does not imply that generic algorithms will
   switch to NCCL.
-- `split_nccl(...)` is currently public only in the C++ API. C, Python, and
-  Fortran bindings expose `with_nccl(...)`, not `split_nccl(...)`.
+- C/Python/Fortran bindings also expose `with_nccl` and `split_nccl` with
+  explicit mode controls via `_ex`/mode-aware APIs.
 
 ## Communicator Layers
 
@@ -153,7 +153,7 @@ The adapter should be read as:
 
 ## C API
 
-Only NCCL context creation is currently exposed in the C bindings:
+NCCL context and mode APIs are exposed in the C bindings:
 
 ```c
 #include <dtl/bindings/c/dtl_context.h>
@@ -163,9 +163,21 @@ dtl_context_create_default(&ctx);
 
 dtl_context_t nccl_ctx;
 dtl_status status = dtl_context_with_nccl(ctx, device_id, &nccl_ctx);
+dtl_status status2 = dtl_context_with_nccl_ex(
+    ctx, device_id, DTL_NCCL_MODE_HYBRID_PARITY, &nccl_ctx);
 ```
 
-There is currently no C binding for `split_nccl(...)`.
+Split and capability introspection are also available:
+
+```c
+dtl_context_t split_ctx;
+dtl_context_split_nccl_ex(nccl_ctx, color, key, device_id,
+                          DTL_NCCL_MODE_HYBRID_PARITY, &split_ctx);
+
+int mode = dtl_context_nccl_mode(split_ctx);
+int can_native = dtl_context_nccl_supports_native(split_ctx, DTL_NCCL_OP_ALLREDUCE);
+int can_hybrid = dtl_context_nccl_supports_hybrid(split_ctx, DTL_NCCL_OP_SCAN);
+```
 
 ## Unsupported Operations
 

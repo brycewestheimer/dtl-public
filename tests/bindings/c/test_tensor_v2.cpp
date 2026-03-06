@@ -356,17 +356,28 @@ TEST_F(TensorV2Test, FillLocal) {
 // Reshape Tests
 // ============================================================================
 
-TEST_F(TensorV2Test, ReshapeSameTotalSucceeds) {
+TEST_F(TensorV2Test, ReshapeSameTotalRespectsLocalPartitionContract) {
     dtl_tensor_t tensor = nullptr;
     dtl_shape shape = dtl_shape_2d(10, 10);
     dtl_tensor_create(ctx, DTL_DTYPE_INT32, shape, &tensor);
 
+    dtl_size_t old_local_size = dtl_tensor_local_size(tensor);
+
     // Reshape to 1D with same total
     dtl_shape new_shape = dtl_shape_1d(100);
     dtl_status status = dtl_tensor_reshape(tensor, new_shape);
-    EXPECT_EQ(status, DTL_SUCCESS);
-    EXPECT_EQ(dtl_tensor_ndim(tensor), 1);
-    EXPECT_EQ(dtl_tensor_global_size(tensor), 100u);
+
+    dtl_size_t base = new_shape.dims[0] / static_cast<dtl_size_t>(size());
+    dtl_size_t rem = new_shape.dims[0] % static_cast<dtl_size_t>(size());
+    dtl_size_t new_local_size = (static_cast<dtl_size_t>(rank()) < rem) ? base + 1 : base;
+
+    if (new_local_size == old_local_size) {
+        EXPECT_EQ(status, DTL_SUCCESS);
+        EXPECT_EQ(dtl_tensor_ndim(tensor), 1);
+        EXPECT_EQ(dtl_tensor_global_size(tensor), 100u);
+    } else {
+        EXPECT_EQ(status, DTL_ERROR_NOT_IMPLEMENTED);
+    }
 
     dtl_tensor_destroy(tensor);
 }

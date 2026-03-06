@@ -169,7 +169,7 @@ TEST_F(CBindingsPolicies, VectorCreateWithCyclicPartition) {
     dtl_vector_destroy(vec);
 }
 
-TEST_F(CBindingsPolicies, VectorCreateWithUnavailablePlacementFails) {
+TEST_F(CBindingsPolicies, VectorCreateWithUnavailablePlacementNoSilentFallback) {
     dtl_container_options opts;
     dtl_container_options_init(&opts);
     opts.placement = DTL_PLACEMENT_DEVICE;
@@ -178,11 +178,18 @@ TEST_F(CBindingsPolicies, VectorCreateWithUnavailablePlacementFails) {
     dtl_status status = dtl_vector_create_with_options(
         ctx, DTL_DTYPE_FLOAT64, 100, &opts, &vec);
 
-    EXPECT_EQ(status, DTL_ERROR_NOT_SUPPORTED);
-    EXPECT_EQ(vec, nullptr);
+    if (status == DTL_SUCCESS) {
+        ASSERT_NE(vec, nullptr);
+        EXPECT_EQ(dtl_vector_placement_policy(vec), DTL_PLACEMENT_DEVICE);
+        dtl_vector_destroy(vec);
+    } else {
+        EXPECT_TRUE(status == DTL_ERROR_NOT_SUPPORTED ||
+                    status == DTL_ERROR_BACKEND_UNAVAILABLE);
+        EXPECT_EQ(vec, nullptr);
+    }
 }
 
-TEST_F(CBindingsPolicies, VectorCreateWithUnifiedPlacementFailsUntilImplemented) {
+TEST_F(CBindingsPolicies, VectorCreateWithUnifiedPlacementNoSilentFallback) {
     dtl_container_options opts;
     dtl_container_options_init(&opts);
     opts.placement = DTL_PLACEMENT_UNIFIED;
@@ -191,8 +198,15 @@ TEST_F(CBindingsPolicies, VectorCreateWithUnifiedPlacementFailsUntilImplemented)
     dtl_status status = dtl_vector_create_with_options(
         ctx, DTL_DTYPE_FLOAT64, 100, &opts, &vec);
 
-    EXPECT_EQ(status, DTL_ERROR_NOT_SUPPORTED);
-    EXPECT_EQ(vec, nullptr);
+    if (status == DTL_SUCCESS) {
+        ASSERT_NE(vec, nullptr);
+        EXPECT_EQ(dtl_vector_placement_policy(vec), DTL_PLACEMENT_UNIFIED);
+        dtl_vector_destroy(vec);
+    } else {
+        EXPECT_TRUE(status == DTL_ERROR_NOT_SUPPORTED ||
+                    status == DTL_ERROR_BACKEND_UNAVAILABLE);
+        EXPECT_EQ(vec, nullptr);
+    }
 }
 
 // ============================================================================
@@ -245,7 +259,7 @@ TEST_F(CBindingsPolicies, ArrayCreateWithBlockCyclicPartition) {
     dtl_array_destroy(arr);
 }
 
-TEST_F(CBindingsPolicies, ArrayCreateWithDevicePlacementFailsUntilImplemented) {
+TEST_F(CBindingsPolicies, ArrayCreateWithDevicePlacementNoSilentFallback) {
     dtl_container_options opts;
     dtl_container_options_init(&opts);
     opts.placement = DTL_PLACEMENT_DEVICE;
@@ -254,11 +268,18 @@ TEST_F(CBindingsPolicies, ArrayCreateWithDevicePlacementFailsUntilImplemented) {
     dtl_status status = dtl_array_create_with_options(
         ctx, DTL_DTYPE_FLOAT64, 100, &opts, &arr);
 
-    EXPECT_EQ(status, DTL_ERROR_NOT_SUPPORTED);
-    EXPECT_EQ(arr, nullptr);
+    if (status == DTL_SUCCESS) {
+        ASSERT_NE(arr, nullptr);
+        EXPECT_EQ(dtl_array_placement_policy(arr), DTL_PLACEMENT_DEVICE);
+        dtl_array_destroy(arr);
+    } else {
+        EXPECT_TRUE(status == DTL_ERROR_NOT_SUPPORTED ||
+                    status == DTL_ERROR_BACKEND_UNAVAILABLE);
+        EXPECT_EQ(arr, nullptr);
+    }
 }
 
-TEST_F(CBindingsPolicies, ArrayCreateWithUnifiedPlacementFailsUntilImplemented) {
+TEST_F(CBindingsPolicies, ArrayCreateWithUnifiedPlacementNoSilentFallback) {
     dtl_container_options opts;
     dtl_container_options_init(&opts);
     opts.placement = DTL_PLACEMENT_UNIFIED;
@@ -267,8 +288,15 @@ TEST_F(CBindingsPolicies, ArrayCreateWithUnifiedPlacementFailsUntilImplemented) 
     dtl_status status = dtl_array_create_with_options(
         ctx, DTL_DTYPE_FLOAT64, 100, &opts, &arr);
 
-    EXPECT_EQ(status, DTL_ERROR_NOT_SUPPORTED);
-    EXPECT_EQ(arr, nullptr);
+    if (status == DTL_SUCCESS) {
+        ASSERT_NE(arr, nullptr);
+        EXPECT_EQ(dtl_array_placement_policy(arr), DTL_PLACEMENT_UNIFIED);
+        dtl_array_destroy(arr);
+    } else {
+        EXPECT_TRUE(status == DTL_ERROR_NOT_SUPPORTED ||
+                    status == DTL_ERROR_BACKEND_UNAVAILABLE);
+        EXPECT_EQ(arr, nullptr);
+    }
 }
 
 // ============================================================================

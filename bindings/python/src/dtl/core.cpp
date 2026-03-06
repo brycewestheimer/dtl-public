@@ -16,6 +16,7 @@
 
 #include <memory>
 #include <string>
+#include <limits>
 
 #ifdef DTL_HAS_MPI4PY
 #include <mpi4py/mpi4py.h>
@@ -127,6 +128,21 @@ public:
     /// @brief Check if context has NCCL domain
     bool has_nccl() const { return dtl_context_has_nccl(ctx_) != 0; }
 
+    /// @brief Get NCCL mode (or -1 if no NCCL domain)
+    int nccl_mode() const { return dtl_context_nccl_mode(ctx_); }
+
+    /// @brief Query NCCL native capability for an operation family
+    bool nccl_supports_native(int op) const {
+        return dtl_context_nccl_supports_native(
+            ctx_, static_cast<dtl_nccl_operation>(op)) != 0;
+    }
+
+    /// @brief Query NCCL hybrid capability for an operation family
+    bool nccl_supports_hybrid(int op) const {
+        return dtl_context_nccl_supports_hybrid(
+            ctx_, static_cast<dtl_nccl_operation>(op)) != 0;
+    }
+
     /// @brief Check if context has SHMEM domain
     bool has_shmem() const { return dtl_context_has_shmem(ctx_) != 0; }
 
@@ -193,9 +209,13 @@ public:
      * @return New context with NCCL domain
      * @note Requires MPI domain to be present
      */
-    std::unique_ptr<DTLContext> with_nccl(int device_id) const {
+    std::unique_ptr<DTLContext> with_nccl(
+        int device_id,
+        int mode = DTL_NCCL_MODE_HYBRID_PARITY) const {
         dtl_context_t new_ctx = nullptr;
-        dtl_status status = dtl_context_with_nccl(ctx_, device_id, &new_ctx);
+        dtl_status status = dtl_context_with_nccl_ex(
+            ctx_, device_id,
+            static_cast<dtl_nccl_operation_mode>(mode), &new_ctx);
         check_status(status);
         return std::unique_ptr<DTLContext>(new DTLContext(new_ctx));
     }
@@ -207,9 +227,17 @@ public:
      * @return New context with split MPI and NCCL communicators
      * @note Requires both MPI and NCCL domains
      */
-    std::unique_ptr<DTLContext> split_nccl(int color, int key = 0) const {
+    std::unique_ptr<DTLContext> split_nccl(
+        int color, int key = 0,
+        int device_id = std::numeric_limits<int>::min(),
+        int mode = DTL_NCCL_MODE_HYBRID_PARITY) const {
+        const int effective_device = (device_id == std::numeric_limits<int>::min())
+            ? dtl_context_device_id(ctx_)
+            : device_id;
         dtl_context_t new_ctx = nullptr;
-        dtl_status status = dtl_context_split_nccl(ctx_, color, key, &new_ctx);
+        dtl_status status = dtl_context_split_nccl_ex(
+            ctx_, color, key, effective_device,
+            static_cast<dtl_nccl_operation_mode>(mode), &new_ctx);
         check_status(status);
         return std::unique_ptr<DTLContext>(new DTLContext(new_ctx));
     }
@@ -334,6 +362,25 @@ private:
 // ============================================================================
 
 void bind_core(py::module_& m) {
+    m.attr("DTL_NCCL_MODE_NATIVE_ONLY") = py::int_(DTL_NCCL_MODE_NATIVE_ONLY);
+    m.attr("DTL_NCCL_MODE_HYBRID_PARITY") = py::int_(DTL_NCCL_MODE_HYBRID_PARITY);
+    m.attr("DTL_NCCL_OP_POINT_TO_POINT") = py::int_(DTL_NCCL_OP_POINT_TO_POINT);
+    m.attr("DTL_NCCL_OP_BARRIER") = py::int_(DTL_NCCL_OP_BARRIER);
+    m.attr("DTL_NCCL_OP_BROADCAST") = py::int_(DTL_NCCL_OP_BROADCAST);
+    m.attr("DTL_NCCL_OP_REDUCE") = py::int_(DTL_NCCL_OP_REDUCE);
+    m.attr("DTL_NCCL_OP_ALLREDUCE") = py::int_(DTL_NCCL_OP_ALLREDUCE);
+    m.attr("DTL_NCCL_OP_GATHER") = py::int_(DTL_NCCL_OP_GATHER);
+    m.attr("DTL_NCCL_OP_SCATTER") = py::int_(DTL_NCCL_OP_SCATTER);
+    m.attr("DTL_NCCL_OP_ALLGATHER") = py::int_(DTL_NCCL_OP_ALLGATHER);
+    m.attr("DTL_NCCL_OP_ALLTOALL") = py::int_(DTL_NCCL_OP_ALLTOALL);
+    m.attr("DTL_NCCL_OP_GATHERV") = py::int_(DTL_NCCL_OP_GATHERV);
+    m.attr("DTL_NCCL_OP_SCATTERV") = py::int_(DTL_NCCL_OP_SCATTERV);
+    m.attr("DTL_NCCL_OP_ALLGATHERV") = py::int_(DTL_NCCL_OP_ALLGATHERV);
+    m.attr("DTL_NCCL_OP_ALLTOALLV") = py::int_(DTL_NCCL_OP_ALLTOALLV);
+    m.attr("DTL_NCCL_OP_SCAN") = py::int_(DTL_NCCL_OP_SCAN);
+    m.attr("DTL_NCCL_OP_EXSCAN") = py::int_(DTL_NCCL_OP_EXSCAN);
+    m.attr("DTL_NCCL_OP_LOGICAL_REDUCTION") = py::int_(DTL_NCCL_OP_LOGICAL_REDUCTION);
+
     // Context class
     py::class_<DTLContext>(m, "Context")
         .def(py::init<py::object, int>(),
@@ -375,10 +422,18 @@ Example:
                                "True if CUDA domain is available")
         .def_property_readonly("has_nccl", &DTLContext::has_nccl,
                                "True if NCCL domain is available")
+        .def_property_readonly("nccl_mode", &DTLContext::nccl_mode,
+                               "NCCL operation mode (-1 if no NCCL domain)")
         .def_property_readonly("has_shmem", &DTLContext::has_shmem,
                                "True if SHMEM domain is available")
         .def_property_readonly("is_valid", &DTLContext::is_valid,
                                "True if context handle is valid")
+        .def("nccl_supports_native", &DTLContext::nccl_supports_native,
+             py::arg("op"),
+             "Query native NCCL capability for an operation family")
+        .def("nccl_supports_hybrid", &DTLContext::nccl_supports_hybrid,
+             py::arg("op"),
+             "Query hybrid NCCL capability for an operation family")
 
         // Synchronization methods
         .def("barrier", &DTLContext::barrier,
@@ -441,11 +496,14 @@ Example:
 )doc")
         .def("with_nccl", &DTLContext::with_nccl,
              py::arg("device_id"),
+             py::arg("mode") = DTL_NCCL_MODE_HYBRID_PARITY,
              R"doc(
 Create new context with NCCL domain added.
 
 Args:
     device_id: CUDA device ID for NCCL communication
+    mode: NCCL mode (`DTL_NCCL_MODE_NATIVE_ONLY` or
+          `DTL_NCCL_MODE_HYBRID_PARITY`)
 
 Returns:
     New Context with NCCL domain enabled.
@@ -461,6 +519,8 @@ Example:
         .def("split_nccl", &DTLContext::split_nccl,
              py::arg("color"),
              py::arg("key") = 0,
+             py::arg("device_id") = std::numeric_limits<int>::min(),
+             py::arg("mode") = DTL_NCCL_MODE_HYBRID_PARITY,
              py::call_guard<py::gil_scoped_release>(),
              R"doc(
 Split context creating sub-groups with NCCL communicators.
@@ -468,6 +528,10 @@ Split context creating sub-groups with NCCL communicators.
 Args:
     color: Color for grouping (ranks with same color form a group)
     key: Ordering key within color group (default: 0)
+    device_id: CUDA device ID for split communicator
+               (default: inherit from current context)
+    mode: NCCL mode (`DTL_NCCL_MODE_NATIVE_ONLY` or
+          `DTL_NCCL_MODE_HYBRID_PARITY`)
 
 Returns:
     New Context with split MPI and NCCL communicators.

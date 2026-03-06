@@ -159,6 +159,28 @@ DTL_API const void* dtl_vector_local_data(dtl_vector_t vec);
 DTL_API void* dtl_vector_local_data_mut(dtl_vector_t vec);
 
 /**
+ * @brief Get pointer to device-accessible local data (read-only)
+ *
+ * Returns a device pointer for device/unified placements.
+ * Returns NULL for host-only placement or on error.
+ *
+ * @param vec The vector
+ * @return Device pointer, or NULL if unavailable
+ */
+DTL_API const void* dtl_vector_device_data(dtl_vector_t vec);
+
+/**
+ * @brief Get pointer to device-accessible local data (mutable)
+ *
+ * Returns a mutable device pointer for device/unified placements.
+ * Returns NULL for host-only placement or on error.
+ *
+ * @param vec The vector
+ * @return Mutable device pointer, or NULL if unavailable
+ */
+DTL_API void* dtl_vector_device_data_mut(dtl_vector_t vec);
+
+/**
  * @brief Get element at local index (type-safe)
  *
  * Copies the element at the local index to the output buffer.
@@ -290,6 +312,41 @@ DTL_API dtl_status dtl_vector_barrier(dtl_vector_t vec);
  * @return DTL_SUCCESS on success, error code otherwise
  */
 DTL_API dtl_status dtl_vector_fill_local(dtl_vector_t vec, const void* value);
+
+/**
+ * @brief Reduce local vector values using sum
+ *
+ * @param vec The vector
+ * @param[out] result Pointer to sum result (dtype-matched)
+ * @return DTL_SUCCESS on success, error code otherwise
+ */
+DTL_API dtl_status dtl_vector_reduce_sum(dtl_vector_t vec, void* result);
+
+/**
+ * @brief Reduce local vector values using min
+ *
+ * @param vec The vector
+ * @param[out] result Pointer to min result (dtype-matched)
+ * @return DTL_SUCCESS on success, error code otherwise
+ */
+DTL_API dtl_status dtl_vector_reduce_min(dtl_vector_t vec, void* result);
+
+/**
+ * @brief Reduce local vector values using max
+ *
+ * @param vec The vector
+ * @param[out] result Pointer to max result (dtype-matched)
+ * @return DTL_SUCCESS on success, error code otherwise
+ */
+DTL_API dtl_status dtl_vector_reduce_max(dtl_vector_t vec, void* result);
+
+/**
+ * @brief Sort local vector values in ascending order
+ *
+ * @param vec The vector
+ * @return DTL_SUCCESS on success, error code otherwise
+ */
+DTL_API dtl_status dtl_vector_sort_ascending(dtl_vector_t vec);
 
 /* ==========================================================================
  * Redistribution (V1.1)

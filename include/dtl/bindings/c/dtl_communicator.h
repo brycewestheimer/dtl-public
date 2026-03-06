@@ -525,6 +525,112 @@ DTL_API dtl_status dtl_exscan(dtl_context_t ctx,
                                dtl_reduce_op op);
 
 /* ==========================================================================
+ * Explicit NCCL Device Collectives
+ * ========================================================================== */
+
+/**
+ * @brief NCCL allreduce on device buffers (mode from context)
+ */
+DTL_API dtl_status dtl_nccl_allreduce_device(dtl_context_t ctx,
+                                             const void* sendbuf, void* recvbuf,
+                                             dtl_size_t count, dtl_dtype dtype,
+                                             dtl_reduce_op op);
+
+/**
+ * @brief NCCL allreduce on device buffers with explicit mode
+ */
+DTL_API dtl_status dtl_nccl_allreduce_device_ex(dtl_context_t ctx,
+                                                const void* sendbuf, void* recvbuf,
+                                                dtl_size_t count, dtl_dtype dtype,
+                                                dtl_reduce_op op,
+                                                dtl_nccl_operation_mode mode);
+
+/**
+ * @brief NCCL broadcast on device buffers (mode from context)
+ */
+DTL_API dtl_status dtl_nccl_broadcast_device(dtl_context_t ctx,
+                                             void* buf, dtl_size_t count,
+                                             dtl_dtype dtype, dtl_rank_t root);
+
+/**
+ * @brief NCCL broadcast on device buffers with explicit mode
+ */
+DTL_API dtl_status dtl_nccl_broadcast_device_ex(dtl_context_t ctx,
+                                                void* buf, dtl_size_t count,
+                                                dtl_dtype dtype, dtl_rank_t root,
+                                                dtl_nccl_operation_mode mode);
+
+/**
+ * @brief NCCL barrier over explicit NCCL domain (device scratch required)
+ */
+DTL_API dtl_status dtl_nccl_barrier_device(dtl_context_t ctx);
+
+/**
+ * @brief Variable-count gather on device buffers (native/hybrid by mode)
+ */
+DTL_API dtl_status dtl_nccl_gatherv_device_ex(dtl_context_t ctx,
+                                              const void* sendbuf, dtl_size_t sendcount,
+                                              dtl_dtype senddtype,
+                                              void* recvbuf, const dtl_size_t* recvcounts,
+                                              const dtl_size_t* displs, dtl_dtype recvdtype,
+                                              dtl_rank_t root,
+                                              dtl_nccl_operation_mode mode);
+
+/**
+ * @brief Variable-count scatter on device buffers (native/hybrid by mode)
+ */
+DTL_API dtl_status dtl_nccl_scatterv_device_ex(dtl_context_t ctx,
+                                               const void* sendbuf,
+                                               const dtl_size_t* sendcounts,
+                                               const dtl_size_t* displs, dtl_dtype senddtype,
+                                               void* recvbuf, dtl_size_t recvcount,
+                                               dtl_dtype recvdtype, dtl_rank_t root,
+                                               dtl_nccl_operation_mode mode);
+
+/**
+ * @brief Variable-count allgather on device buffers (native/hybrid by mode)
+ */
+DTL_API dtl_status dtl_nccl_allgatherv_device_ex(dtl_context_t ctx,
+                                                 const void* sendbuf, dtl_size_t sendcount,
+                                                 dtl_dtype dtype,
+                                                 void* recvbuf,
+                                                 const dtl_size_t* recvcounts,
+                                                 const dtl_size_t* displs,
+                                                 dtl_nccl_operation_mode mode);
+
+/**
+ * @brief Variable-count alltoall on device buffers (native/hybrid by mode)
+ */
+DTL_API dtl_status dtl_nccl_alltoallv_device_ex(dtl_context_t ctx,
+                                                const void* sendbuf,
+                                                const dtl_size_t* sendcounts,
+                                                const dtl_size_t* sdispls,
+                                                dtl_dtype senddtype,
+                                                void* recvbuf,
+                                                const dtl_size_t* recvcounts,
+                                                const dtl_size_t* rdispls,
+                                                dtl_dtype recvdtype,
+                                                dtl_nccl_operation_mode mode);
+
+/**
+ * @brief Inclusive scan on device buffers (hybrid in parity mode)
+ */
+DTL_API dtl_status dtl_nccl_scan_device_ex(dtl_context_t ctx,
+                                           const void* sendbuf, void* recvbuf,
+                                           dtl_size_t count, dtl_dtype dtype,
+                                           dtl_reduce_op op,
+                                           dtl_nccl_operation_mode mode);
+
+/**
+ * @brief Exclusive scan on device buffers (hybrid in parity mode)
+ */
+DTL_API dtl_status dtl_nccl_exscan_device_ex(dtl_context_t ctx,
+                                             const void* sendbuf, void* recvbuf,
+                                             dtl_size_t count, dtl_dtype dtype,
+                                             dtl_reduce_op op,
+                                             dtl_nccl_operation_mode mode);
+
+/* ==========================================================================
  * Probe Operations (Phase 16)
  * ========================================================================== */
 

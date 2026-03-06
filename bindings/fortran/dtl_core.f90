@@ -91,6 +91,17 @@ module dtl_core
     public :: DTL_OP_LXOR, DTL_OP_BXOR, DTL_OP_MINLOC, DTL_OP_MAXLOC
     public :: DTL_OP_COUNT
 
+    ! NCCL mode / operation enums
+    public :: DTL_NCCL_MODE_NATIVE_ONLY, DTL_NCCL_MODE_HYBRID_PARITY
+    public :: DTL_NCCL_OP_POINT_TO_POINT, DTL_NCCL_OP_BARRIER
+    public :: DTL_NCCL_OP_BROADCAST, DTL_NCCL_OP_REDUCE
+    public :: DTL_NCCL_OP_ALLREDUCE, DTL_NCCL_OP_GATHER
+    public :: DTL_NCCL_OP_SCATTER, DTL_NCCL_OP_ALLGATHER
+    public :: DTL_NCCL_OP_ALLTOALL, DTL_NCCL_OP_GATHERV
+    public :: DTL_NCCL_OP_SCATTERV, DTL_NCCL_OP_ALLGATHERV
+    public :: DTL_NCCL_OP_ALLTOALLV, DTL_NCCL_OP_SCAN
+    public :: DTL_NCCL_OP_EXSCAN, DTL_NCCL_OP_LOGICAL_REDUCTION
+
     ! ==========================================================================
     ! Determinism/scheduling policies
     ! ==========================================================================
@@ -264,6 +275,30 @@ module dtl_core
     integer(c_int), parameter :: DTL_OP_MINLOC = 10
     integer(c_int), parameter :: DTL_OP_MAXLOC = 11
     integer(c_int), parameter :: DTL_OP_COUNT = 12
+
+    ! ======================================================================
+    ! NCCL Mode / Operation Enumerations
+    ! ======================================================================
+
+    integer(c_int), parameter :: DTL_NCCL_MODE_NATIVE_ONLY = 0
+    integer(c_int), parameter :: DTL_NCCL_MODE_HYBRID_PARITY = 1
+
+    integer(c_int), parameter :: DTL_NCCL_OP_POINT_TO_POINT = 0
+    integer(c_int), parameter :: DTL_NCCL_OP_BARRIER = 1
+    integer(c_int), parameter :: DTL_NCCL_OP_BROADCAST = 2
+    integer(c_int), parameter :: DTL_NCCL_OP_REDUCE = 3
+    integer(c_int), parameter :: DTL_NCCL_OP_ALLREDUCE = 4
+    integer(c_int), parameter :: DTL_NCCL_OP_GATHER = 5
+    integer(c_int), parameter :: DTL_NCCL_OP_SCATTER = 6
+    integer(c_int), parameter :: DTL_NCCL_OP_ALLGATHER = 7
+    integer(c_int), parameter :: DTL_NCCL_OP_ALLTOALL = 8
+    integer(c_int), parameter :: DTL_NCCL_OP_GATHERV = 9
+    integer(c_int), parameter :: DTL_NCCL_OP_SCATTERV = 10
+    integer(c_int), parameter :: DTL_NCCL_OP_ALLGATHERV = 11
+    integer(c_int), parameter :: DTL_NCCL_OP_ALLTOALLV = 12
+    integer(c_int), parameter :: DTL_NCCL_OP_SCAN = 13
+    integer(c_int), parameter :: DTL_NCCL_OP_EXSCAN = 14
+    integer(c_int), parameter :: DTL_NCCL_OP_LOGICAL_REDUCTION = 15
 
     ! ======================================================================
     ! Determinism / Scheduling Policies

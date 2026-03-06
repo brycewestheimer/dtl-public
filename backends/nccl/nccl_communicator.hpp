@@ -78,12 +78,15 @@ public:
     /// @param rank This process's rank
     /// @param size Total number of ranks
     /// @param stream CUDA stream for operations
+    /// @param owns_stream Whether this instance owns and destroys the stream
     explicit nccl_communicator(ncclComm_t comm, rank_t rank, rank_t size,
-                               cudaStream_t stream = nullptr)
+                               cudaStream_t stream = nullptr,
+                               bool owns_stream = true)
         : comm_(comm)
         , rank_(rank)
         , size_(size)
         , stream_(stream)
+        , owns_stream_(owns_stream)
         , barrier_scratch_(nullptr) {
         // Pre-allocate persistent scratch buffer for barrier
         cudaError_t alloc_err = cudaMalloc(&barrier_scratch_, sizeof(int));
@@ -94,13 +97,10 @@ public:
     }
 #endif
 
-    /// @brief Destructor - frees barrier scratch buffer
+    /// @brief Destructor - frees NCCL/CUDA resources if owned
     ~nccl_communicator() {
 #if defined(DTL_ENABLE_NCCL) && defined(DTL_ENABLE_CUDA)
-        if (barrier_scratch_) {
-            cudaFree(barrier_scratch_);
-            barrier_scratch_ = nullptr;
-        }
+        (void)release_resources(/*destroy_comm=*/true, /*destroy_stream=*/true);
 #endif
     }
 
@@ -115,6 +115,7 @@ public:
 #if defined(DTL_ENABLE_NCCL) && defined(DTL_ENABLE_CUDA)
         , comm_(other.comm_)
         , stream_(other.stream_)
+        , owns_stream_(other.owns_stream_)
         , barrier_scratch_(other.barrier_scratch_)
 #endif
     {
@@ -122,6 +123,8 @@ public:
         other.comm_ = nullptr;
 #endif
 #if defined(DTL_ENABLE_NCCL) && defined(DTL_ENABLE_CUDA)
+        other.stream_ = nullptr;
+        other.owns_stream_ = false;
         other.barrier_scratch_ = nullptr;
 #endif
     }
@@ -131,13 +134,14 @@ public:
             rank_ = other.rank_;
             size_ = other.size_;
 #if defined(DTL_ENABLE_NCCL) && defined(DTL_ENABLE_CUDA)
-            if (barrier_scratch_) {
-                cudaFree(barrier_scratch_);
-            }
+            (void)release_resources(/*destroy_comm=*/true, /*destroy_stream=*/true);
             comm_ = other.comm_;
             stream_ = other.stream_;
+            owns_stream_ = other.owns_stream_;
             barrier_scratch_ = other.barrier_scratch_;
             other.comm_ = nullptr;
+            other.stream_ = nullptr;
+            other.owns_stream_ = false;
             other.barrier_scratch_ = nullptr;
 #endif
         }
@@ -1488,14 +1492,10 @@ public:
 
     /// @brief Destroy the NCCL communicator
     result<void> destroy() {
-#if defined(DTL_ENABLE_NCCL)
-        if (comm_ != nullptr) {
-            ncclResult_t result = ncclCommDestroy(comm_);
-            comm_ = nullptr;
-            if (result != ncclSuccess) {
-                return make_error<void>(status_code::backend_error,
-                                       "ncclCommDestroy failed");
-            }
+#if defined(DTL_ENABLE_NCCL) && defined(DTL_ENABLE_CUDA)
+        auto cleanup_result = release_resources(/*destroy_comm=*/true, /*destroy_stream=*/true);
+        if (!cleanup_result) {
+            return cleanup_result;
         }
         return {};
 #else
@@ -1510,6 +1510,49 @@ public:
 #endif
 
 private:
+#if defined(DTL_ENABLE_NCCL) && defined(DTL_ENABLE_CUDA)
+    [[nodiscard]] result<void> release_resources(bool destroy_comm, bool destroy_stream) noexcept {
+        status first_error;
+        bool has_error = false;
+
+        if (barrier_scratch_ != nullptr) {
+            cudaError_t free_err = cudaFree(barrier_scratch_);
+            barrier_scratch_ = nullptr;
+            if (free_err != cudaSuccess && !has_error) {
+                has_error = true;
+                first_error = status{status_code::backend_error, no_rank,
+                                     "cudaFree failed for NCCL barrier scratch"};
+            }
+        }
+
+        if (destroy_stream && owns_stream_ && stream_ != nullptr) {
+            cudaError_t destroy_err = cudaStreamDestroy(stream_);
+            stream_ = nullptr;
+            owns_stream_ = false;
+            if (destroy_err != cudaSuccess && !has_error) {
+                has_error = true;
+                first_error = status{status_code::backend_error, no_rank,
+                                     "cudaStreamDestroy failed for NCCL stream"};
+            }
+        }
+
+        if (destroy_comm && comm_ != nullptr) {
+            ncclResult_t comm_err = ncclCommDestroy(comm_);
+            comm_ = nullptr;
+            if (comm_err != ncclSuccess && !has_error) {
+                has_error = true;
+                first_error = status{status_code::backend_error, no_rank,
+                                     "ncclCommDestroy failed"};
+            }
+        }
+
+        if (has_error) {
+            return result<void>::failure(first_error);
+        }
+        return {};
+    }
+#endif
+
 #if defined(DTL_ENABLE_CUDA)
     [[nodiscard]] result<void> require_device_buffer(const void* ptr,
                                                      size_type bytes,
@@ -1588,6 +1631,7 @@ private:
 
 #if defined(DTL_ENABLE_CUDA)
     cudaStream_t stream_ = nullptr;
+    bool owns_stream_ = false;
     int* barrier_scratch_ = nullptr;  ///< Persistent scratch buffer for barrier
 #endif
 

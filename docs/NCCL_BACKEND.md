@@ -19,13 +19,19 @@ All NCCL operations require **device buffers only**. Host pointers are rejected 
 | `isend` / `irecv` | Supported | Async with CUDA event tracking |
 | `barrier` | Supported | Implemented via allreduce on scratch buffer |
 
+## Operation Modes
+
+- `native_only`: only NCCL-native operations are accepted.
+- `hybrid_parity`: non-native families can use explicit MPI-assisted staging
+  through dedicated C APIs (`*_device_ex`).
+
 ## Unsupported Operations
 
 | Operation | Reason |
 |---|---|
-| `scan` / `exscan` | Not available in NCCL API |
-| `gatherv` / `scatterv` | Variable-size collectives not supported |
-| `alltoall` / `alltoallv` | Not available in NCCL (use MPI for this) |
+| `scan` / `exscan` | Not native in NCCL (hybrid path available in explicit C API) |
+| `gatherv` / `scatterv` | Not native in NCCL (hybrid path available in explicit C API) |
+| `alltoallv` | Not native in NCCL (hybrid path available in explicit C API) |
 | Host buffer operations | Device-buffer-only by design |
 
 ## Bootstrap Pattern
@@ -46,10 +52,18 @@ NCCL communicators are bootstrapped via MPI:
 
 ## C API Status
 
-- `dtl_context_with_nccl()`: Returns `DTL_ERROR_NOT_SUPPORTED` (deferred)
-- `dtl_context_split_nccl()`: Returns `DTL_ERROR_NOT_SUPPORTED` (deferred)
-
-NCCL in the C API is deferred until device C containers are validated at scale. The C++ NCCL communicator is mature and used directly in integration tests.
+- `dtl_context_with_nccl()` / `dtl_context_with_nccl_ex(...)`: supported
+- `dtl_context_split_nccl()` / `dtl_context_split_nccl_ex(...)`: supported
+- mode/capability introspection:
+  - `dtl_context_nccl_mode()`
+  - `dtl_context_nccl_supports_native()`
+  - `dtl_context_nccl_supports_hybrid()`
+- explicit device collectives:
+  - `dtl_nccl_allreduce_device(_ex)`
+  - `dtl_nccl_broadcast_device(_ex)`
+  - `dtl_nccl_barrier_device`
+  - hybrid parity families via `_ex`:
+    `gatherv/scatterv/allgatherv/alltoallv/scan/exscan`
 
 ## Rank-to-Device Mapping
 

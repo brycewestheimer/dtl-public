@@ -36,11 +36,11 @@ static_assert(Communicator<default_communicator>,
 TEST(DefaultCommunicatorTest, WorldCommReturnsValidCommunicator) {
     auto comm = world_comm();
 #if DTL_ENABLE_MPI
-    if (dtl::mpi::is_initialized()) {
+    if (dtl::mpi::is_initialized() && !dtl::mpi::is_finalized()) {
         EXPECT_GE(comm.rank(), 0);
         EXPECT_GE(comm.size(), 1);
     } else {
-        // Pre-init access yields sentinel values for MPI communicator.
+        // Pre-init or post-finalize access yields sentinel values.
         EXPECT_EQ(comm.rank(), dtl::no_rank);
         EXPECT_EQ(comm.size(), dtl::rank_t{0});
     }

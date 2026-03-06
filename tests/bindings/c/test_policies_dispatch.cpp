@@ -17,6 +17,7 @@
 #include <dtl/bindings/c/dtl_algorithms.h>
 #include <dtl/bindings/c/dtl_context.h>
 #include <dtl/bindings/c/dtl_status.h>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -178,7 +179,7 @@ TEST_F(PolicyDispatchTest, VectorHostPlacementQueryReturnsHost) {
     dtl_vector_destroy(vec);
 }
 
-TEST_F(PolicyDispatchTest, VectorDevicePlacementCreationFailsWithoutSilentFallback) {
+TEST_F(PolicyDispatchTest, VectorDevicePlacementNoSilentFallback) {
     dtl_container_options opts;
     dtl_container_options_init(&opts);
     opts.placement = DTL_PLACEMENT_DEVICE;
@@ -187,12 +188,18 @@ TEST_F(PolicyDispatchTest, VectorDevicePlacementCreationFailsWithoutSilentFallba
     dtl_status status = dtl_vector_create_with_options(
         ctx, DTL_DTYPE_FLOAT64, 100, &opts, &vec);
 
-    // Should return NOT_SUPPORTED, not silently fall back to host
-    EXPECT_EQ(status, DTL_ERROR_NOT_SUPPORTED);
-    EXPECT_EQ(vec, nullptr);
+    if (status == DTL_SUCCESS) {
+        ASSERT_NE(vec, nullptr);
+        EXPECT_EQ(dtl_vector_placement_policy(vec), DTL_PLACEMENT_DEVICE);
+        dtl_vector_destroy(vec);
+    } else {
+        EXPECT_TRUE(status == DTL_ERROR_NOT_SUPPORTED ||
+                    status == DTL_ERROR_BACKEND_UNAVAILABLE);
+        EXPECT_EQ(vec, nullptr);
+    }
 }
 
-TEST_F(PolicyDispatchTest, VectorUnifiedPlacementCreationFailsWithoutSilentFallback) {
+TEST_F(PolicyDispatchTest, VectorUnifiedPlacementNoSilentFallback) {
     dtl_container_options opts;
     dtl_container_options_init(&opts);
     opts.placement = DTL_PLACEMENT_UNIFIED;
@@ -201,11 +208,18 @@ TEST_F(PolicyDispatchTest, VectorUnifiedPlacementCreationFailsWithoutSilentFallb
     dtl_status status = dtl_vector_create_with_options(
         ctx, DTL_DTYPE_FLOAT64, 100, &opts, &vec);
 
-    EXPECT_EQ(status, DTL_ERROR_NOT_SUPPORTED);
-    EXPECT_EQ(vec, nullptr);
+    if (status == DTL_SUCCESS) {
+        ASSERT_NE(vec, nullptr);
+        EXPECT_EQ(dtl_vector_placement_policy(vec), DTL_PLACEMENT_UNIFIED);
+        dtl_vector_destroy(vec);
+    } else {
+        EXPECT_TRUE(status == DTL_ERROR_NOT_SUPPORTED ||
+                    status == DTL_ERROR_BACKEND_UNAVAILABLE);
+        EXPECT_EQ(vec, nullptr);
+    }
 }
 
-TEST_F(PolicyDispatchTest, ArrayUnifiedPlacementCreationFailsWithoutSilentFallback) {
+TEST_F(PolicyDispatchTest, ArrayUnifiedPlacementNoSilentFallback) {
     dtl_container_options opts;
     dtl_container_options_init(&opts);
     opts.placement = DTL_PLACEMENT_UNIFIED;
@@ -214,8 +228,15 @@ TEST_F(PolicyDispatchTest, ArrayUnifiedPlacementCreationFailsWithoutSilentFallba
     dtl_status status = dtl_array_create_with_options(
         ctx, DTL_DTYPE_FLOAT64, 100, &opts, &arr);
 
-    EXPECT_EQ(status, DTL_ERROR_NOT_SUPPORTED);
-    EXPECT_EQ(arr, nullptr);
+    if (status == DTL_SUCCESS) {
+        ASSERT_NE(arr, nullptr);
+        EXPECT_EQ(dtl_array_placement_policy(arr), DTL_PLACEMENT_UNIFIED);
+        dtl_array_destroy(arr);
+    } else {
+        EXPECT_TRUE(status == DTL_ERROR_NOT_SUPPORTED ||
+                    status == DTL_ERROR_BACKEND_UNAVAILABLE);
+        EXPECT_EQ(arr, nullptr);
+    }
 }
 
 // ============================================================================
@@ -624,10 +645,15 @@ TEST_F(PolicyDispatchTest, ErrorHandlerInvokedOnTransformVectorSizeMismatch) {
     dtl_container_options_init(&opts_cb);
     dtl_container_options_set_error(&opts_cb, DTL_ERROR_POLICY_CALLBACK);
 
+    dtl_size_t world = static_cast<dtl_size_t>(dtl_context_size(ctx));
+    ASSERT_GE(world, 1u);
+
+    // Choose sizes so every rank sees a local-size mismatch under block partition:
+    // src local size = 1, dst local size = 2.
     dtl_vector_t src = nullptr;
     dtl_vector_t dst = nullptr;
-    ASSERT_EQ(dtl_vector_create_with_options(ctx, DTL_DTYPE_INT32, 1, &opts_default, &src), DTL_SUCCESS);
-    ASSERT_EQ(dtl_vector_create_with_options(ctx, DTL_DTYPE_INT32, 2, &opts_cb, &dst), DTL_SUCCESS);
+    ASSERT_EQ(dtl_vector_create_with_options(ctx, DTL_DTYPE_INT32, world, &opts_default, &src), DTL_SUCCESS);
+    ASSERT_EQ(dtl_vector_create_with_options(ctx, DTL_DTYPE_INT32, 2 * world, &opts_cb, &dst), DTL_SUCCESS);
 
     auto transform = [](const void* in, void* out, dtl_size_t /*idx*/, void* /*ud*/) {
         *static_cast<int32_t*>(out) = *static_cast<const int32_t*>(in);
@@ -668,6 +694,10 @@ TEST_F(PolicyDispatchTest, ErrorHandlerInvokedOnArraySetLocalOutOfBounds) {
 }
 
 TEST(PolicyDispatchDeathTest, TerminateErrorPolicyAbortsOnError) {
+    const char* mpi_size_env = std::getenv("OMPI_COMM_WORLD_SIZE");
+    if (mpi_size_env && std::strcmp(mpi_size_env, "1") != 0) {
+        GTEST_SKIP() << "Skipping death test under MPI multi-rank launch";
+    }
 #if GTEST_HAS_DEATH_TEST
     ASSERT_DEATH(
         {

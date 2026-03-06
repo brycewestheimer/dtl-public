@@ -87,6 +87,161 @@ static dtl_status ensure_mpi_initialized(bool init_if_needed) {
 
 #endif  // DTL_HAS_MPI
 
+#ifdef DTL_HAS_NCCL
+
+static bool nccl_mode_valid(int mode) {
+    return mode == DTL_NCCL_MODE_NATIVE_ONLY || mode == DTL_NCCL_MODE_HYBRID_PARITY;
+}
+
+static bool nccl_op_supported_native(dtl_nccl_operation op) {
+    switch (op) {
+        case DTL_NCCL_OP_POINT_TO_POINT:
+        case DTL_NCCL_OP_BARRIER:
+        case DTL_NCCL_OP_BROADCAST:
+        case DTL_NCCL_OP_REDUCE:
+        case DTL_NCCL_OP_ALLREDUCE:
+        case DTL_NCCL_OP_GATHER:
+        case DTL_NCCL_OP_SCATTER:
+        case DTL_NCCL_OP_ALLGATHER:
+        case DTL_NCCL_OP_ALLTOALL:
+            return true;
+        case DTL_NCCL_OP_GATHERV:
+        case DTL_NCCL_OP_SCATTERV:
+        case DTL_NCCL_OP_ALLGATHERV:
+        case DTL_NCCL_OP_ALLTOALLV:
+        case DTL_NCCL_OP_SCAN:
+        case DTL_NCCL_OP_EXSCAN:
+        case DTL_NCCL_OP_LOGICAL_REDUCTION:
+            return false;
+    }
+    return false;
+}
+
+static bool nccl_op_supported_hybrid(dtl_nccl_operation op) {
+    switch (op) {
+        case DTL_NCCL_OP_POINT_TO_POINT:
+        case DTL_NCCL_OP_BARRIER:
+        case DTL_NCCL_OP_BROADCAST:
+        case DTL_NCCL_OP_REDUCE:
+        case DTL_NCCL_OP_ALLREDUCE:
+        case DTL_NCCL_OP_GATHER:
+        case DTL_NCCL_OP_SCATTER:
+        case DTL_NCCL_OP_ALLGATHER:
+        case DTL_NCCL_OP_ALLTOALL:
+        case DTL_NCCL_OP_GATHERV:
+        case DTL_NCCL_OP_SCATTERV:
+        case DTL_NCCL_OP_ALLGATHERV:
+        case DTL_NCCL_OP_ALLTOALLV:
+        case DTL_NCCL_OP_SCAN:
+        case DTL_NCCL_OP_EXSCAN:
+        case DTL_NCCL_OP_LOGICAL_REDUCTION:
+            return true;
+    }
+    return false;
+}
+
+static void clear_nccl_resources(dtl_context_t ctx) {
+    if (!ctx) {
+        return;
+    }
+#ifdef DTL_HAS_CUDA
+    if (ctx->barrier_scratch != nullptr) {
+        cudaFree(ctx->barrier_scratch);
+        ctx->barrier_scratch = nullptr;
+    }
+    if (ctx->cuda_stream != nullptr) {
+        cudaStreamDestroy(static_cast<cudaStream_t>(ctx->cuda_stream));
+        ctx->cuda_stream = nullptr;
+    }
+#endif
+    if (ctx->nccl_comm != nullptr) {
+        ncclCommDestroy(static_cast<ncclComm_t>(ctx->nccl_comm));
+        ctx->nccl_comm = nullptr;
+    }
+}
+
+static dtl_status init_nccl_for_context(dtl_context_t ctx, int device_id) {
+    if (!ctx) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+#if !defined(DTL_HAS_MPI) || !defined(DTL_HAS_CUDA)
+    (void)device_id;
+    return DTL_ERROR_BACKEND_UNAVAILABLE;
+#else
+    if (!(ctx->domain_flags & dtl_context_s::HAS_MPI)) {
+        return DTL_ERROR_NOT_SUPPORTED;
+    }
+    if (device_id < 0) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+
+    dtl_status cuda_status = validate_cuda_device_id(device_id);
+    if (cuda_status != DTL_SUCCESS) {
+        return cuda_status;
+    }
+
+    cudaError_t cuda_err = cudaSetDevice(device_id);
+    if (cuda_err != cudaSuccess) {
+        return DTL_ERROR_CUDA;
+    }
+
+    cudaStream_t stream = nullptr;
+    cuda_err = cudaStreamCreate(&stream);
+    if (cuda_err != cudaSuccess) {
+        return DTL_ERROR_CUDA;
+    }
+
+    int* barrier_scratch = nullptr;
+    cuda_err = cudaMalloc(&barrier_scratch, sizeof(int));
+    if (cuda_err != cudaSuccess) {
+        cudaStreamDestroy(stream);
+        return DTL_ERROR_CUDA;
+    }
+    int zero = 0;
+    cuda_err = cudaMemcpy(barrier_scratch, &zero, sizeof(int), cudaMemcpyHostToDevice);
+    if (cuda_err != cudaSuccess) {
+        cudaFree(barrier_scratch);
+        cudaStreamDestroy(stream);
+        return DTL_ERROR_CUDA;
+    }
+
+    ncclUniqueId id{};
+    if (ctx->rank == 0) {
+        ncclResult_t get_id_err = ncclGetUniqueId(&id);
+        if (get_id_err != ncclSuccess) {
+            cudaFree(barrier_scratch);
+            cudaStreamDestroy(stream);
+            return DTL_ERROR_NCCL;
+        }
+    }
+
+    int mpi_err = MPI_Bcast(&id, sizeof(id), MPI_BYTE, 0, ctx->comm);
+    if (mpi_err != MPI_SUCCESS) {
+        cudaFree(barrier_scratch);
+        cudaStreamDestroy(stream);
+        return DTL_ERROR_MPI;
+    }
+
+    ncclComm_t comm = nullptr;
+    ncclResult_t init_err = ncclCommInitRank(&comm, ctx->size, id, ctx->rank);
+    if (init_err != ncclSuccess) {
+        cudaFree(barrier_scratch);
+        cudaStreamDestroy(stream);
+        return DTL_ERROR_NCCL;
+    }
+
+    ctx->device_id = device_id;
+    ctx->nccl_comm = static_cast<void*>(comm);
+    ctx->cuda_stream = static_cast<void*>(stream);
+    ctx->barrier_scratch = static_cast<void*>(barrier_scratch);
+    ctx->domain_flags |= dtl_context_s::HAS_NCCL;
+    ctx->domain_flags |= dtl_context_s::HAS_CUDA;
+    return DTL_SUCCESS;
+#endif
+}
+
+#endif  // DTL_HAS_NCCL
+
 // ============================================================================
 // Context Lifecycle
 // ============================================================================
@@ -118,10 +273,17 @@ dtl_status dtl_context_create(dtl_context_t* ctx, const dtl_context_options* opt
     impl->determinism_mode = opts->reserved[0];
     impl->reduction_schedule_policy = opts->reserved[1];
     impl->progress_ordering_policy = opts->reserved[2];
+    impl->nccl_mode = DTL_NCCL_MODE_HYBRID_PARITY;
     impl->magic = dtl_context_s::VALID_MAGIC;
     impl->domain_flags = dtl_context_s::HAS_CPU;  // Always have CPU domain
     impl->error_handler = nullptr;
     impl->error_handler_user_data = nullptr;
+
+#ifdef DTL_HAS_NCCL
+    impl->nccl_comm = nullptr;
+    impl->cuda_stream = nullptr;
+    impl->barrier_scratch = nullptr;
+#endif
 
 #ifdef DTL_HAS_MPI
     // Ensure MPI is initialized
@@ -187,18 +349,7 @@ void dtl_context_destroy(dtl_context_t ctx) {
 #ifdef DTL_HAS_NCCL
     // Destroy NCCL communicator and associated resources
     if (ctx->domain_flags & dtl_context_s::HAS_NCCL) {
-        if (ctx->barrier_scratch != nullptr) {
-            cudaFree(ctx->barrier_scratch);
-            ctx->barrier_scratch = nullptr;
-        }
-        if (ctx->nccl_comm != nullptr) {
-            ncclCommDestroy(static_cast<ncclComm_t>(ctx->nccl_comm));
-            ctx->nccl_comm = nullptr;
-        }
-        if (ctx->cuda_stream != nullptr) {
-            cudaStreamDestroy(static_cast<cudaStream_t>(ctx->cuda_stream));
-            ctx->cuda_stream = nullptr;
-        }
+        clear_nccl_resources(ctx);
     }
 #endif
 
@@ -260,7 +411,10 @@ int dtl_context_device_id(dtl_context_t ctx) {
 }
 
 int dtl_context_has_device(dtl_context_t ctx) {
-    return (dtl_context_device_id(ctx) >= 0) ? 1 : 0;
+    if (!ctx || ctx->magic != dtl_context_s::VALID_MAGIC) {
+        return 0;
+    }
+    return ((ctx->domain_flags & dtl_context_s::HAS_CUDA) && ctx->device_id >= 0) ? 1 : 0;
 }
 
 int dtl_context_determinism_mode(dtl_context_t ctx) {
@@ -356,6 +510,7 @@ dtl_status dtl_context_dup(dtl_context_t src, dtl_context_t* dst) {
     impl->determinism_mode = src->determinism_mode;
     impl->reduction_schedule_policy = src->reduction_schedule_policy;
     impl->progress_ordering_policy = src->progress_ordering_policy;
+    impl->nccl_mode = src->nccl_mode;
     impl->magic = dtl_context_s::VALID_MAGIC;
     impl->rank = src->rank;
     impl->size = src->size;
@@ -371,6 +526,10 @@ dtl_status dtl_context_dup(dtl_context_t src, dtl_context_t* dst) {
 
 #ifdef DTL_HAS_MPI
     // Duplicate the communicator
+    impl->comm = MPI_COMM_NULL;
+    impl->owns_comm = false;
+    impl->initialized_mpi = false;
+    impl->finalize_mpi = false;
     int err = MPI_Comm_dup(src->comm, &impl->comm);
     if (err != MPI_SUCCESS) {
         delete impl;
@@ -378,8 +537,6 @@ dtl_status dtl_context_dup(dtl_context_t src, dtl_context_t* dst) {
     }
     (void)MPI_Comm_set_errhandler(impl->comm, MPI_ERRORS_RETURN);
     impl->owns_comm = true;
-    impl->initialized_mpi = false;  // Don't track MPI init for duplicates
-    impl->finalize_mpi = false;
 #endif
 
     *dst = impl;
@@ -401,7 +558,7 @@ int dtl_context_has_cuda(dtl_context_t ctx) {
     if (!ctx || ctx->magic != dtl_context_s::VALID_MAGIC) {
         return 0;
     }
-    return (ctx->domain_flags & dtl_context_s::HAS_CUDA) ? 1 : 0;
+    return ((ctx->domain_flags & dtl_context_s::HAS_CUDA) && ctx->device_id >= 0) ? 1 : 0;
 }
 
 int dtl_context_has_nccl(dtl_context_t ctx) {
@@ -409,6 +566,42 @@ int dtl_context_has_nccl(dtl_context_t ctx) {
         return 0;
     }
     return (ctx->domain_flags & dtl_context_s::HAS_NCCL) ? 1 : 0;
+}
+
+int dtl_context_nccl_mode(dtl_context_t ctx) {
+    if (!ctx || ctx->magic != dtl_context_s::VALID_MAGIC) {
+        return -1;
+    }
+    if (!(ctx->domain_flags & dtl_context_s::HAS_NCCL)) {
+        return -1;
+    }
+    if (!nccl_mode_valid(ctx->nccl_mode)) {
+        return -1;
+    }
+    return ctx->nccl_mode;
+}
+
+int dtl_context_nccl_supports_native(dtl_context_t ctx, dtl_nccl_operation op) {
+    if (!ctx || ctx->magic != dtl_context_s::VALID_MAGIC) {
+        return 0;
+    }
+    if (!(ctx->domain_flags & dtl_context_s::HAS_NCCL)) {
+        return 0;
+    }
+    return nccl_op_supported_native(op) ? 1 : 0;
+}
+
+int dtl_context_nccl_supports_hybrid(dtl_context_t ctx, dtl_nccl_operation op) {
+    if (!ctx || ctx->magic != dtl_context_s::VALID_MAGIC) {
+        return 0;
+    }
+    if (!(ctx->domain_flags & dtl_context_s::HAS_NCCL)) {
+        return 0;
+    }
+    if (ctx->nccl_mode != DTL_NCCL_MODE_HYBRID_PARITY) {
+        return 0;
+    }
+    return nccl_op_supported_hybrid(op) ? 1 : 0;
 }
 
 int dtl_context_has_shmem(dtl_context_t ctx) {
@@ -446,6 +639,10 @@ dtl_status dtl_context_split(dtl_context_t ctx, int color, int key,
     }
 
     // Split the communicator
+    impl->comm = MPI_COMM_NULL;
+    impl->owns_comm = false;
+    impl->initialized_mpi = false;
+    impl->finalize_mpi = false;
     int err = MPI_Comm_split(ctx->comm, color, key, &impl->comm);
     if (err != MPI_SUCCESS) {
         delete impl;
@@ -462,11 +659,10 @@ dtl_status dtl_context_split(dtl_context_t ctx, int color, int key,
     impl->determinism_mode = ctx->determinism_mode;
     impl->reduction_schedule_policy = ctx->reduction_schedule_policy;
     impl->progress_ordering_policy = ctx->progress_ordering_policy;
+    impl->nccl_mode = ctx->nccl_mode;
     impl->magic = dtl_context_s::VALID_MAGIC;
     impl->domain_flags = ctx->domain_flags & ~dtl_context_s::HAS_NCCL;
     impl->owns_comm = true;
-    impl->initialized_mpi = false;
-    impl->finalize_mpi = false;
     impl->error_handler = ctx->error_handler;
     impl->error_handler_user_data = ctx->error_handler_user_data;
 
@@ -519,12 +715,28 @@ dtl_status dtl_context_with_cuda(dtl_context_t ctx, int device_id,
     impl->determinism_mode = ctx->determinism_mode;
     impl->reduction_schedule_policy = ctx->reduction_schedule_policy;
     impl->progress_ordering_policy = ctx->progress_ordering_policy;
+    impl->nccl_mode = ctx->nccl_mode;
     impl->magic = dtl_context_s::VALID_MAGIC;
-    impl->domain_flags = ctx->domain_flags | dtl_context_s::HAS_CUDA;
+    impl->domain_flags = ctx->domain_flags & ~dtl_context_s::HAS_NCCL;
+    if (device_id >= 0) {
+        impl->domain_flags |= dtl_context_s::HAS_CUDA;
+    } else {
+        impl->domain_flags &= ~dtl_context_s::HAS_CUDA;
+    }
     impl->error_handler = ctx->error_handler;
     impl->error_handler_user_data = ctx->error_handler_user_data;
 
+#ifdef DTL_HAS_NCCL
+    impl->nccl_comm = nullptr;
+    impl->cuda_stream = nullptr;
+    impl->barrier_scratch = nullptr;
+#endif
+
 #ifdef DTL_HAS_MPI
+    impl->comm = MPI_COMM_NULL;
+    impl->owns_comm = false;
+    impl->initialized_mpi = false;
+    impl->finalize_mpi = false;
     if (ctx->domain_flags & dtl_context_s::HAS_MPI) {
         int err = MPI_Comm_dup(ctx->comm, &impl->comm);
         if (err != MPI_SUCCESS) {
@@ -544,6 +756,13 @@ dtl_status dtl_context_with_cuda(dtl_context_t ctx, int device_id,
 
 dtl_status dtl_context_with_nccl(dtl_context_t ctx, int device_id,
                                   dtl_context_t* out) {
+    return dtl_context_with_nccl_ex(
+        ctx, device_id, DTL_NCCL_MODE_HYBRID_PARITY, out);
+}
+
+dtl_status dtl_context_with_nccl_ex(dtl_context_t ctx, int device_id,
+                                     dtl_nccl_operation_mode mode,
+                                     dtl_context_t* out) {
     if (!out) {
         return DTL_ERROR_NULL_POINTER;
     }
@@ -552,18 +771,88 @@ dtl_status dtl_context_with_nccl(dtl_context_t ctx, int device_id,
         return DTL_ERROR_INVALID_ARGUMENT;
     }
 
+    if (!nccl_mode_valid(mode)) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+
+#if !defined(DTL_HAS_NCCL) || !defined(DTL_HAS_CUDA)
+    (void)device_id;
+    (void)mode;
+    return DTL_ERROR_BACKEND_UNAVAILABLE;
+#else
     // NCCL requires MPI domain
     if (!(ctx->domain_flags & dtl_context_s::HAS_MPI)) {
         return DTL_ERROR_NOT_SUPPORTED;
     }
 
-    (void)device_id;
-    return DTL_ERROR_NOT_SUPPORTED;
+    // Allocate new context
+    dtl_context_s* impl = nullptr;
+    try {
+        impl = new dtl_context_s();
+    } catch (...) {
+        return DTL_ERROR_ALLOCATION_FAILED;
+    }
+
+    impl->rank = ctx->rank;
+    impl->size = ctx->size;
+    impl->device_id = device_id;
+    impl->determinism_mode = ctx->determinism_mode;
+    impl->reduction_schedule_policy = ctx->reduction_schedule_policy;
+    impl->progress_ordering_policy = ctx->progress_ordering_policy;
+    impl->nccl_mode = mode;
+    impl->magic = dtl_context_s::VALID_MAGIC;
+    impl->domain_flags = ctx->domain_flags | dtl_context_s::HAS_NCCL | dtl_context_s::HAS_CUDA;
+    impl->error_handler = ctx->error_handler;
+    impl->error_handler_user_data = ctx->error_handler_user_data;
+    impl->nccl_comm = nullptr;
+    impl->cuda_stream = nullptr;
+    impl->barrier_scratch = nullptr;
+
+#ifdef DTL_HAS_MPI
+    impl->comm = MPI_COMM_NULL;
+    impl->owns_comm = false;
+    impl->initialized_mpi = false;
+    impl->finalize_mpi = false;
+    if (ctx->domain_flags & dtl_context_s::HAS_MPI) {
+        int err = MPI_Comm_dup(ctx->comm, &impl->comm);
+        if (err != MPI_SUCCESS) {
+            delete impl;
+            return DTL_ERROR_MPI;
+        }
+        (void)MPI_Comm_set_errhandler(impl->comm, MPI_ERRORS_RETURN);
+        impl->owns_comm = true;
+    }
+#endif
+
+    dtl_status init_status = init_nccl_for_context(impl, device_id);
+    if (init_status != DTL_SUCCESS) {
+        dtl_context_destroy(impl);
+        return init_status;
+    }
+
+    *out = impl;
+    return DTL_SUCCESS;
+#endif
 }
 
 dtl_status dtl_context_split_nccl(dtl_context_t ctx,
                                     int color, int key,
                                     dtl_context_t* out) {
+    if (!ctx || ctx->magic != dtl_context_s::VALID_MAGIC) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+    dtl_nccl_operation_mode mode = nccl_mode_valid(ctx->nccl_mode)
+        ? static_cast<dtl_nccl_operation_mode>(ctx->nccl_mode)
+        : DTL_NCCL_MODE_HYBRID_PARITY;
+    return dtl_context_split_nccl_ex(
+        ctx, color, key, ctx->device_id, mode, out);
+}
+
+dtl_status dtl_context_split_nccl_ex(dtl_context_t ctx,
+                                      int color, int key,
+                                      int device_id,
+                                      dtl_nccl_operation_mode mode,
+                                      dtl_context_t* out) {
     if (!out) {
         return DTL_ERROR_NULL_POINTER;
     }
@@ -572,7 +861,18 @@ dtl_status dtl_context_split_nccl(dtl_context_t ctx,
         return DTL_ERROR_INVALID_ARGUMENT;
     }
 
-    // Requires both MPI and NCCL domains
+    if (!nccl_mode_valid(mode)) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+
+#if !defined(DTL_HAS_NCCL) || !defined(DTL_HAS_CUDA) || !defined(DTL_HAS_MPI)
+    (void)color;
+    (void)key;
+    (void)device_id;
+    (void)mode;
+    return DTL_ERROR_BACKEND_UNAVAILABLE;
+#else
+    // Requires both MPI and NCCL domains for legacy split behavior parity
     if (!(ctx->domain_flags & dtl_context_s::HAS_MPI)) {
         return DTL_ERROR_NOT_SUPPORTED;
     }
@@ -580,9 +880,51 @@ dtl_status dtl_context_split_nccl(dtl_context_t ctx,
         return DTL_ERROR_NOT_SUPPORTED;
     }
 
-    (void)color;
-    (void)key;
-    return DTL_ERROR_NOT_SUPPORTED;
+    // Allocate new context
+    dtl_context_s* impl = nullptr;
+    try {
+        impl = new dtl_context_s();
+    } catch (...) {
+        return DTL_ERROR_ALLOCATION_FAILED;
+    }
+
+    impl->comm = MPI_COMM_NULL;
+    impl->owns_comm = false;
+    impl->initialized_mpi = false;
+    impl->finalize_mpi = false;
+    impl->nccl_comm = nullptr;
+    impl->cuda_stream = nullptr;
+    impl->barrier_scratch = nullptr;
+
+    int err = MPI_Comm_split(ctx->comm, color, key, &impl->comm);
+    if (err != MPI_SUCCESS) {
+        delete impl;
+        return DTL_ERROR_MPI;
+    }
+    (void)MPI_Comm_set_errhandler(impl->comm, MPI_ERRORS_RETURN);
+    impl->owns_comm = true;
+
+    MPI_Comm_rank(impl->comm, &impl->rank);
+    MPI_Comm_size(impl->comm, &impl->size);
+    impl->device_id = device_id;
+    impl->determinism_mode = ctx->determinism_mode;
+    impl->reduction_schedule_policy = ctx->reduction_schedule_policy;
+    impl->progress_ordering_policy = ctx->progress_ordering_policy;
+    impl->nccl_mode = mode;
+    impl->magic = dtl_context_s::VALID_MAGIC;
+    impl->domain_flags = (ctx->domain_flags | dtl_context_s::HAS_NCCL | dtl_context_s::HAS_CUDA);
+    impl->error_handler = ctx->error_handler;
+    impl->error_handler_user_data = ctx->error_handler_user_data;
+
+    dtl_status init_status = init_nccl_for_context(impl, device_id);
+    if (init_status != DTL_SUCCESS) {
+        dtl_context_destroy(impl);
+        return init_status;
+    }
+
+    *out = impl;
+    return DTL_SUCCESS;
+#endif
 }
 
 }  // extern "C"

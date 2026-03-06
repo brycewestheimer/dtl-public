@@ -190,12 +190,20 @@ dtl_status dtl_environment_make_world_context(dtl_environment_t env,
     impl->rank = cpp_ctx.rank();
     impl->size = cpp_ctx.size();
     impl->device_id = -1;  // CPU-only world context
+    impl->determinism_mode = DTL_DETERMINISM_THROUGHPUT;
+    impl->reduction_schedule_policy = DTL_REDUCTION_SCHEDULE_IMPLEMENTATION_DEFINED;
+    impl->progress_ordering_policy = DTL_PROGRESS_ORDERING_IMPLEMENTATION_DEFINED;
+    impl->nccl_mode = DTL_NCCL_MODE_HYBRID_PARITY;
     impl->magic = dtl_context_s::VALID_MAGIC;
     impl->domain_flags = dtl_context_s::HAS_CPU;
     impl->error_handler = nullptr;
     impl->error_handler_user_data = nullptr;
 
 #ifdef DTL_HAS_MPI
+    impl->comm = MPI_COMM_NULL;
+    impl->owns_comm = false;
+    impl->initialized_mpi = false;
+    impl->finalize_mpi = false;
     if (env->impl->has_mpi()) {
         MPI_Comm source_comm = env->impl->communicator();
         if (source_comm == MPI_COMM_NULL) {
@@ -214,6 +222,12 @@ dtl_status dtl_environment_make_world_context(dtl_environment_t env,
         impl->finalize_mpi = false;
         impl->domain_flags |= dtl_context_s::HAS_MPI;
     }
+#endif
+
+#ifdef DTL_HAS_NCCL
+    impl->nccl_comm = nullptr;
+    impl->cuda_stream = nullptr;
+    impl->barrier_scratch = nullptr;
 #endif
 
     *ctx = impl;
@@ -250,6 +264,10 @@ dtl_status dtl_environment_make_world_context_gpu(dtl_environment_t env,
     impl->rank = cpp_ctx.rank();
     impl->size = cpp_ctx.size();
     impl->device_id = device_id;
+    impl->determinism_mode = DTL_DETERMINISM_THROUGHPUT;
+    impl->reduction_schedule_policy = DTL_REDUCTION_SCHEDULE_IMPLEMENTATION_DEFINED;
+    impl->progress_ordering_policy = DTL_PROGRESS_ORDERING_IMPLEMENTATION_DEFINED;
+    impl->nccl_mode = DTL_NCCL_MODE_HYBRID_PARITY;
     impl->magic = dtl_context_s::VALID_MAGIC;
     impl->domain_flags = dtl_context_s::HAS_CPU;
     impl->error_handler = nullptr;
@@ -261,6 +279,10 @@ dtl_status dtl_environment_make_world_context_gpu(dtl_environment_t env,
     }
 
 #ifdef DTL_HAS_MPI
+    impl->comm = MPI_COMM_NULL;
+    impl->owns_comm = false;
+    impl->initialized_mpi = false;
+    impl->finalize_mpi = false;
     if (env->impl->has_mpi()) {
         MPI_Comm source_comm = env->impl->communicator();
         if (source_comm == MPI_COMM_NULL) {
@@ -279,6 +301,12 @@ dtl_status dtl_environment_make_world_context_gpu(dtl_environment_t env,
         impl->finalize_mpi = false;
         impl->domain_flags |= dtl_context_s::HAS_MPI;
     }
+#endif
+
+#ifdef DTL_HAS_NCCL
+    impl->nccl_comm = nullptr;
+    impl->cuda_stream = nullptr;
+    impl->barrier_scratch = nullptr;
 #endif
 
     *ctx = impl;
@@ -310,10 +338,26 @@ dtl_status dtl_environment_make_cpu_context(dtl_environment_t env,
     impl->rank = cpp_ctx.rank();
     impl->size = cpp_ctx.size();
     impl->device_id = -1;
+    impl->determinism_mode = DTL_DETERMINISM_THROUGHPUT;
+    impl->reduction_schedule_policy = DTL_REDUCTION_SCHEDULE_IMPLEMENTATION_DEFINED;
+    impl->progress_ordering_policy = DTL_PROGRESS_ORDERING_IMPLEMENTATION_DEFINED;
+    impl->nccl_mode = DTL_NCCL_MODE_HYBRID_PARITY;
     impl->magic = dtl_context_s::VALID_MAGIC;
     impl->domain_flags = dtl_context_s::HAS_CPU;
     impl->error_handler = nullptr;
     impl->error_handler_user_data = nullptr;
+
+#ifdef DTL_HAS_MPI
+    impl->comm = MPI_COMM_NULL;
+    impl->owns_comm = false;
+    impl->initialized_mpi = false;
+    impl->finalize_mpi = false;
+#endif
+#ifdef DTL_HAS_NCCL
+    impl->nccl_comm = nullptr;
+    impl->cuda_stream = nullptr;
+    impl->barrier_scratch = nullptr;
+#endif
 
     // No MPI for CPU-only context (intentional: this is for single-process use)
 

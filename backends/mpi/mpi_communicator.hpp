@@ -54,8 +54,12 @@ public:
             // This can happen if a static world communicator is constructed
             // before the program explicitly initializes MPI.
             int initialized = 0;
+            int finalized = 0;
             MPI_Initialized(&initialized);
             if (initialized) {
+                MPI_Finalized(&finalized);
+            }
+            if (initialized && !finalized) {
                 MPI_Comm_rank(comm_, &rank_);
                 MPI_Comm_size(comm_, &size_);
             }
@@ -66,8 +70,10 @@ public:
     /// @brief Destructor (frees owned communicator)
     ~mpi_communicator() {
 #if DTL_ENABLE_MPI
+        int finalized = 0;
+        MPI_Finalized(&finalized);
         if (owns_comm_ && comm_ != MPI_COMM_NULL &&
-            comm_ != MPI_COMM_WORLD && comm_ != MPI_COMM_SELF) {
+            comm_ != MPI_COMM_WORLD && comm_ != MPI_COMM_SELF && !finalized) {
             MPI_Comm_free(&comm_);
         }
 #endif
@@ -95,7 +101,9 @@ public:
     mpi_communicator& operator=(mpi_communicator&& other) noexcept {
         if (this != &other) {
 #if DTL_ENABLE_MPI
-            if (owns_comm_ && comm_ != MPI_COMM_NULL) {
+            int finalized = 0;
+            MPI_Finalized(&finalized);
+            if (owns_comm_ && comm_ != MPI_COMM_NULL && !finalized) {
                 MPI_Comm_free(&comm_);
             }
             comm_ = other.comm_;
@@ -1216,8 +1224,12 @@ private:
     static std::atomic<bool> reinit_checked{false};
     if (!reinit_checked) {
         int initialized = 0;
+        int finalized = 0;
         MPI_Initialized(&initialized);
         if (initialized) {
+            MPI_Finalized(&finalized);
+        }
+        if (initialized && !finalized) {
             if (world_comm.size() <= 1) {
                 world_comm = mpi_communicator(MPI_COMM_WORLD, false);
             }
@@ -1241,8 +1253,12 @@ private:
     static std::atomic<bool> reinit_checked{false};
     if (!reinit_checked) {
         int initialized = 0;
+        int finalized = 0;
         MPI_Initialized(&initialized);
         if (initialized) {
+            MPI_Finalized(&finalized);
+        }
+        if (initialized && !finalized) {
             self_comm = mpi_communicator(MPI_COMM_SELF, false);
             reinit_checked = true;
         }

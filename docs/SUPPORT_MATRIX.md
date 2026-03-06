@@ -25,15 +25,15 @@ Feature support across language bindings.
 
 | Feature | C++ | C | Python | Fortran |
 |---|---|---|---|---|
-| Allreduce | Supported | Deferred | Deferred | Deferred |
-| Broadcast | Supported | Deferred | Deferred | Deferred |
-| Reduce | Supported | Deferred | Deferred | Deferred |
-| Allgather | Supported | Deferred | Deferred | Deferred |
-| Send/Recv (P2P) | Supported | Deferred | Deferred | Deferred |
-| Isend/Irecv | Supported | Deferred | Deferred | Deferred |
-| Barrier | Supported | Deferred | Deferred | Deferred |
-| Scan/Exscan | Unsupported | Unsupported | Unsupported | Unsupported |
-| Variable-size collectives | Unsupported | Unsupported | Unsupported | Unsupported |
+| Allreduce | Supported | Supported (`*_device[_ex]`) | Deferred | Partial (C interface) |
+| Broadcast | Supported | Supported (`*_device[_ex]`) | Deferred | Partial (C interface) |
+| Reduce | Supported | Hybrid via explicit device APIs | Deferred | Partial (C interface) |
+| Allgather | Supported | Hybrid via explicit device APIs | Deferred | Partial (C interface) |
+| Send/Recv (P2P) | Supported | MPI-primary C API | Deferred | Deferred |
+| Isend/Irecv | Supported | MPI-primary C API | Deferred | Deferred |
+| Barrier | Supported | Supported (`dtl_nccl_barrier_device`) | Deferred | Partial (C interface) |
+| Scan/Exscan | Unsupported (native) | Hybrid parity (`*_device_ex`) | Unsupported | Partial (C interface) |
+| Variable-size collectives | Unsupported (native) | Hybrid parity (`*_device_ex`) | Unsupported | Partial (C interface) |
 
 ## CUDA Container Operations
 

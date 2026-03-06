@@ -12,16 +12,16 @@ the CUDA and NCCL backends as of 2026-03-06.
 | Device memory allocation | N/A | Supported | N/A |
 | Device local algorithms | N/A | Supported | N/A |
 | `with_nccl(device_id)` | N/A | Requires CUDA | Supported |
-| `split_nccl(...)` | Bootstrap via MPI split | Requires CUDA | Supported in C++ only |
+| `split_nccl(...)` | Bootstrap via MPI split | Requires CUDA | Supported in C++ and bindings via mode-aware `_ex` APIs |
 | Point-to-point | Supported | N/A | Supported for device buffers |
 | Broadcast | Supported | N/A | Supported for device buffers |
 | Gather / Scatter | Supported | N/A | Supported for fixed-size device buffers |
 | Allgather / Alltoall | Supported | N/A | Supported for fixed-size device buffers |
 | Reduce / Allreduce | Supported | N/A | Supported for explicit device-buffer paths |
-| Variable-size collectives | Supported | N/A | Unsupported |
-| Scan / Exscan | Supported | Local-only helpers | Unsupported on NCCL adapter |
+| Variable-size collectives | Supported | N/A | Hybrid parity supported in explicit C device APIs (`*_device_ex`) |
+| Scan / Exscan | Supported | Local-only helpers | Hybrid parity supported in explicit C device APIs (`*_device_ex`) |
 | Scalar convenience reductions | Supported | N/A | Unsupported |
-| Logical reductions | Supported | N/A | Unsupported |
+| Logical reductions | Supported | N/A | Hybrid parity supported in explicit C device APIs (`*_device_ex`) |
 | Host-buffer collectives | Supported | N/A | Unsupported |
 | RMA / one-sided | Supported | N/A | Unsupported |
 
@@ -42,7 +42,7 @@ the CUDA and NCCL backends as of 2026-03-06.
 | Subsystem | Issue | Status |
 |---|---|---|
 | Documentation | NCCL docs overstated MPI-like parity and implicit context behavior | Remediated in backend docs |
-| Public API scope | `split_nccl(...)` support was not clearly documented as C++-only | Remediated in docs/comments |
+| Public API scope | Mode-aware binding parity for `with_nccl/split_nccl` was missing | Remediated with `_ex` APIs and binding updates |
 | Test coverage | No explicit contract tests for host-buffer rejection and blocking completion | Remediated with explicit NCCL adapter contract coverage |
 
 ### Low Severity
@@ -68,12 +68,13 @@ the CUDA and NCCL backends as of 2026-03-06.
 - Variable-size collectives
 - Logical reductions
 - Host-buffer communication
-- `split_nccl(...)` as C++-only/publicly limited
+- `split_nccl(...)` now available in C/Python/Fortran via mode-aware bindings
 
 ### Future Parity Work
 
 - Explicit device-resident distributed container support
 - Opt-in NCCL-aware algorithm entry points
-- Binding parity for any retained public NCCL APIs beyond `with_nccl(...)`
+- Continued expansion of high-level Python convenience wrappers for explicit
+  NCCL device collectives
 - Additional multi-rank GPU integration coverage once MPI-enabled CI/build
   environments are available consistently

@@ -154,6 +154,18 @@ void* dtl_vector_local_data_mut(dtl_vector_t vec) {
     return h->vtable->local_data_mut(h->impl);
 }
 
+const void* dtl_vector_device_data(dtl_vector_t vec) {
+    const auto* h = get_handle_const(vec);
+    if (!h) return nullptr;
+    return h->vtable->device_data(h->impl);
+}
+
+void* dtl_vector_device_data_mut(dtl_vector_t vec) {
+    auto* h = get_handle(vec);
+    if (!h) return nullptr;
+    return h->vtable->device_data_mut(h->impl);
+}
+
 dtl_status dtl_vector_get_local(dtl_vector_t vec, dtl_size_t local_idx, void* value) {
     const auto* h = get_handle_const(vec);
     if (!h) return DTL_ERROR_INVALID_ARGUMENT;
@@ -255,6 +267,33 @@ dtl_status dtl_vector_fill_local(dtl_vector_t vec, const void* value) {
     if (!h) return DTL_ERROR_INVALID_ARGUMENT;
     if (!value) return apply_error_policy(h, DTL_ERROR_NULL_POINTER);
     return apply_error_policy(h, h->vtable->fill(h->impl, value));
+}
+
+dtl_status dtl_vector_reduce_sum(dtl_vector_t vec, void* result) {
+    auto* h = get_handle(vec);
+    if (!h) return DTL_ERROR_INVALID_ARGUMENT;
+    if (!result) return apply_error_policy(h, DTL_ERROR_NULL_POINTER);
+    return apply_error_policy(h, h->vtable->reduce_sum(h->impl, result));
+}
+
+dtl_status dtl_vector_reduce_min(dtl_vector_t vec, void* result) {
+    auto* h = get_handle(vec);
+    if (!h) return DTL_ERROR_INVALID_ARGUMENT;
+    if (!result) return apply_error_policy(h, DTL_ERROR_NULL_POINTER);
+    return apply_error_policy(h, h->vtable->reduce_min(h->impl, result));
+}
+
+dtl_status dtl_vector_reduce_max(dtl_vector_t vec, void* result) {
+    auto* h = get_handle(vec);
+    if (!h) return DTL_ERROR_INVALID_ARGUMENT;
+    if (!result) return apply_error_policy(h, DTL_ERROR_NULL_POINTER);
+    return apply_error_policy(h, h->vtable->reduce_max(h->impl, result));
+}
+
+dtl_status dtl_vector_sort_ascending(dtl_vector_t vec) {
+    auto* h = get_handle(vec);
+    if (!h) return DTL_ERROR_INVALID_ARGUMENT;
+    return apply_error_policy(h, h->vtable->sort_ascending(h->impl));
 }
 
 // ============================================================================

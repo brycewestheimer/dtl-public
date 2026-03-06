@@ -15,6 +15,8 @@
 #include "dtl_internal.hpp"
 
 #include <cstdint>
+#include <cstddef>
+#include <algorithm>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -94,6 +96,11 @@ static dtl_status convert_size_array_to_int(const dtl_size_t* in,
 // NCCL Datatype/Op Mapping and Dispatch Helpers
 // ============================================================================
 
+static bool nccl_mode_valid(dtl_nccl_operation_mode mode) {
+    return mode == DTL_NCCL_MODE_NATIVE_ONLY
+        || mode == DTL_NCCL_MODE_HYBRID_PARITY;
+}
+
 #ifdef DTL_HAS_NCCL
 #include <nccl.h>
 #include <cuda_runtime.h>
@@ -162,6 +169,92 @@ static size_t nccl_dtype_size(dtl_dtype dtype) {
         case DTL_DTYPE_FLOAT64: return 8;
         default:                return 0;
     }
+}
+
+static dtl_nccl_operation_mode nccl_mode_from_context(dtl_context_t ctx) {
+    if (ctx->nccl_mode == DTL_NCCL_MODE_NATIVE_ONLY) {
+        return DTL_NCCL_MODE_NATIVE_ONLY;
+    }
+    return DTL_NCCL_MODE_HYBRID_PARITY;
+}
+
+static bool require_nccl_device_context(dtl_context_t ctx) {
+    return ctx != nullptr
+        && (ctx->domain_flags & dtl_context_s::HAS_NCCL)
+        && ctx->nccl_comm != nullptr
+        && ctx->cuda_stream != nullptr;
+}
+
+static dtl_status require_device_buffer_ptr(const void* ptr, size_t bytes) {
+    if (bytes == 0) {
+        return DTL_SUCCESS;
+    }
+    if (!ptr) {
+        return DTL_ERROR_NULL_POINTER;
+    }
+    cudaPointerAttributes attrs{};
+    cudaError_t attr_err = cudaPointerGetAttributes(&attrs, ptr);
+    if (attr_err != cudaSuccess) {
+        cudaGetLastError();  // clear sticky error for subsequent CUDA calls
+        return DTL_ERROR_INVALID_POINTER;
+    }
+#if CUDART_VERSION >= 10000
+    if (attrs.type != cudaMemoryTypeDevice) {
+#else
+    if (attrs.memoryType != cudaMemoryTypeDevice) {
+#endif
+        return DTL_ERROR_INVALID_POINTER;
+    }
+    return DTL_SUCCESS;
+}
+
+static dtl_status copy_device_to_host(std::vector<std::byte>& host,
+                                      const void* device_ptr,
+                                      size_t bytes,
+                                      cudaStream_t stream) {
+    if (bytes == 0) {
+        return DTL_SUCCESS;
+    }
+    host.resize(bytes);
+    cudaError_t err = cudaMemcpyAsync(host.data(), device_ptr, bytes,
+                                      cudaMemcpyDeviceToHost, stream);
+    if (err != cudaSuccess) {
+        return DTL_ERROR_TRANSFER_FAILED;
+    }
+    err = cudaStreamSynchronize(stream);
+    return (err == cudaSuccess) ? DTL_SUCCESS : DTL_ERROR_TRANSFER_FAILED;
+}
+
+static dtl_status copy_host_to_device(void* device_ptr,
+                                      const void* host_ptr,
+                                      size_t bytes,
+                                      cudaStream_t stream) {
+    if (bytes == 0) {
+        return DTL_SUCCESS;
+    }
+    cudaError_t err = cudaMemcpyAsync(device_ptr, host_ptr, bytes,
+                                      cudaMemcpyHostToDevice, stream);
+    if (err != cudaSuccess) {
+        return DTL_ERROR_TRANSFER_FAILED;
+    }
+    err = cudaStreamSynchronize(stream);
+    return (err == cudaSuccess) ? DTL_SUCCESS : DTL_ERROR_TRANSFER_FAILED;
+}
+
+static size_t max_extent_from_counts_displs(dtl_rank_t size,
+                                            const dtl_size_t* counts,
+                                            const dtl_size_t* displs) {
+    if (!counts || !displs || size <= 0) {
+        return 0;
+    }
+    size_t max_extent = 0;
+    for (dtl_rank_t i = 0; i < size; ++i) {
+        const size_t end = displs[i] + counts[i];
+        if (end > max_extent) {
+            max_extent = end;
+        }
+    }
+    return max_extent;
 }
 #endif  // DTL_HAS_NCCL
 
@@ -1491,6 +1584,566 @@ dtl_status dtl_exscan(dtl_context_t ctx,
     fill_identity_for_dtype(recvbuf, count, dtype, op);
     (void)sendbuf;
     return DTL_SUCCESS;
+#endif
+}
+
+dtl_status dtl_nccl_allreduce_device(dtl_context_t ctx,
+                                      const void* sendbuf, void* recvbuf,
+                                      dtl_size_t count, dtl_dtype dtype,
+                                      dtl_reduce_op op) {
+#ifdef DTL_HAS_NCCL
+    return dtl_nccl_allreduce_device_ex(
+        ctx, sendbuf, recvbuf, count, dtype, op, nccl_mode_from_context(ctx));
+#else
+    (void)ctx; (void)sendbuf; (void)recvbuf; (void)count; (void)dtype; (void)op;
+    return DTL_ERROR_BACKEND_UNAVAILABLE;
+#endif
+}
+
+dtl_status dtl_nccl_allreduce_device_ex(dtl_context_t ctx,
+                                         const void* sendbuf, void* recvbuf,
+                                         dtl_size_t count, dtl_dtype dtype,
+                                         dtl_reduce_op op,
+                                         dtl_nccl_operation_mode mode) {
+    if (!is_valid_context(ctx)) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+    if (!nccl_mode_valid(mode)) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+
+#if defined(DTL_HAS_NCCL) && defined(DTL_HAS_CUDA)
+    if (!require_nccl_device_context(ctx)) {
+        return DTL_ERROR_NOT_SUPPORTED;
+    }
+    const size_t elem_size = dtl_dtype_size(dtype);
+    if (elem_size == 0) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+    const size_t bytes = static_cast<size_t>(count) * elem_size;
+    dtl_status send_check = require_device_buffer_ptr(sendbuf, bytes);
+    if (send_check != DTL_SUCCESS) {
+        return send_check;
+    }
+    dtl_status recv_check = require_device_buffer_ptr(recvbuf, bytes);
+    if (recv_check != DTL_SUCCESS) {
+        return recv_check;
+    }
+
+    const bool native_supported = nccl_supports_dtype(dtype) && nccl_supports_reduce_op(op);
+    if (native_supported) {
+        ncclResult_t nccl_err = ncclAllReduce(
+            sendbuf, recvbuf, count, dtype_to_nccl(dtype), reduce_op_to_nccl(op),
+            static_cast<ncclComm_t>(ctx->nccl_comm),
+            static_cast<cudaStream_t>(ctx->cuda_stream));
+        if (nccl_err != ncclSuccess) {
+            return DTL_ERROR_REDUCE_FAILED;
+        }
+        return nccl_stream_sync(ctx);
+    }
+
+    if (mode == DTL_NCCL_MODE_NATIVE_ONLY) {
+        return DTL_ERROR_NOT_SUPPORTED;
+    }
+
+    std::vector<std::byte> host_send;
+    std::vector<std::byte> host_recv(bytes);
+    dtl_status copy_status = copy_device_to_host(
+        host_send, sendbuf, bytes, static_cast<cudaStream_t>(ctx->cuda_stream));
+    if (copy_status != DTL_SUCCESS) {
+        return copy_status;
+    }
+    dtl_status reduce_status = dtl_allreduce(
+        ctx, host_send.data(), host_recv.data(), count, dtype, op);
+    if (reduce_status != DTL_SUCCESS) {
+        return reduce_status;
+    }
+    return copy_host_to_device(
+        recvbuf, host_recv.data(), bytes, static_cast<cudaStream_t>(ctx->cuda_stream));
+#else
+    (void)sendbuf; (void)recvbuf; (void)count; (void)dtype; (void)op; (void)mode;
+    return DTL_ERROR_BACKEND_UNAVAILABLE;
+#endif
+}
+
+dtl_status dtl_nccl_broadcast_device(dtl_context_t ctx,
+                                      void* buf, dtl_size_t count,
+                                      dtl_dtype dtype, dtl_rank_t root) {
+#ifdef DTL_HAS_NCCL
+    return dtl_nccl_broadcast_device_ex(
+        ctx, buf, count, dtype, root, nccl_mode_from_context(ctx));
+#else
+    (void)ctx; (void)buf; (void)count; (void)dtype; (void)root;
+    return DTL_ERROR_BACKEND_UNAVAILABLE;
+#endif
+}
+
+dtl_status dtl_nccl_broadcast_device_ex(dtl_context_t ctx,
+                                         void* buf, dtl_size_t count,
+                                         dtl_dtype dtype, dtl_rank_t root,
+                                         dtl_nccl_operation_mode mode) {
+    if (!is_valid_context(ctx)) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+    if (!nccl_mode_valid(mode)) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+
+#if defined(DTL_HAS_NCCL) && defined(DTL_HAS_CUDA)
+    if (!require_nccl_device_context(ctx)) {
+        return DTL_ERROR_NOT_SUPPORTED;
+    }
+    const size_t elem_size = dtl_dtype_size(dtype);
+    if (elem_size == 0) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+    const size_t bytes = static_cast<size_t>(count) * elem_size;
+    dtl_status buf_check = require_device_buffer_ptr(buf, bytes);
+    if (buf_check != DTL_SUCCESS) {
+        return buf_check;
+    }
+
+    const bool native_supported = nccl_supports_dtype(dtype);
+    if (native_supported) {
+        ncclResult_t nccl_err = ncclBroadcast(
+            buf, buf, count, dtype_to_nccl(dtype), root,
+            static_cast<ncclComm_t>(ctx->nccl_comm),
+            static_cast<cudaStream_t>(ctx->cuda_stream));
+        if (nccl_err != ncclSuccess) {
+            return DTL_ERROR_BROADCAST_FAILED;
+        }
+        return nccl_stream_sync(ctx);
+    }
+
+    if (mode == DTL_NCCL_MODE_NATIVE_ONLY) {
+        return DTL_ERROR_NOT_SUPPORTED;
+    }
+
+    std::vector<std::byte> host_buf;
+    dtl_status copy_status = copy_device_to_host(
+        host_buf, buf, bytes, static_cast<cudaStream_t>(ctx->cuda_stream));
+    if (copy_status != DTL_SUCCESS) {
+        return copy_status;
+    }
+    dtl_status bcast_status = dtl_broadcast(ctx, host_buf.data(), count, dtype, root);
+    if (bcast_status != DTL_SUCCESS) {
+        return bcast_status;
+    }
+    return copy_host_to_device(
+        buf, host_buf.data(), bytes, static_cast<cudaStream_t>(ctx->cuda_stream));
+#else
+    (void)buf; (void)count; (void)dtype; (void)root; (void)mode;
+    return DTL_ERROR_BACKEND_UNAVAILABLE;
+#endif
+}
+
+dtl_status dtl_nccl_barrier_device(dtl_context_t ctx) {
+    if (!is_valid_context(ctx)) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+
+#if defined(DTL_HAS_NCCL) && defined(DTL_HAS_CUDA)
+    if (!require_nccl_device_context(ctx) || ctx->barrier_scratch == nullptr) {
+        return DTL_ERROR_NOT_SUPPORTED;
+    }
+    ncclResult_t nccl_err = ncclAllReduce(
+        ctx->barrier_scratch, ctx->barrier_scratch, 1, ncclInt32, ncclSum,
+        static_cast<ncclComm_t>(ctx->nccl_comm),
+        static_cast<cudaStream_t>(ctx->cuda_stream));
+    if (nccl_err != ncclSuccess) {
+        return DTL_ERROR_BARRIER_FAILED;
+    }
+    return nccl_stream_sync(ctx);
+#else
+    return DTL_ERROR_BACKEND_UNAVAILABLE;
+#endif
+}
+
+dtl_status dtl_nccl_gatherv_device_ex(dtl_context_t ctx,
+                                       const void* sendbuf, dtl_size_t sendcount,
+                                       dtl_dtype senddtype,
+                                       void* recvbuf, const dtl_size_t* recvcounts,
+                                       const dtl_size_t* displs, dtl_dtype recvdtype,
+                                       dtl_rank_t root,
+                                       dtl_nccl_operation_mode mode) {
+    if (!is_valid_context(ctx)) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+    if (!nccl_mode_valid(mode)) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+    if (mode == DTL_NCCL_MODE_NATIVE_ONLY) {
+        return DTL_ERROR_NOT_SUPPORTED;
+    }
+    if (!recvcounts || !displs) {
+        return DTL_ERROR_NULL_POINTER;
+    }
+
+#if defined(DTL_HAS_NCCL) && defined(DTL_HAS_CUDA)
+    if (!require_nccl_device_context(ctx)) {
+        return DTL_ERROR_NOT_SUPPORTED;
+    }
+    const size_t send_elem = dtl_dtype_size(senddtype);
+    const size_t recv_elem = dtl_dtype_size(recvdtype);
+    if (send_elem == 0 || recv_elem == 0) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+    const size_t send_bytes = static_cast<size_t>(sendcount) * send_elem;
+    dtl_status send_check = require_device_buffer_ptr(sendbuf, send_bytes);
+    if (send_check != DTL_SUCCESS) {
+        return send_check;
+    }
+
+    size_t recv_bytes = 0;
+    if (ctx->rank == root) {
+        recv_bytes = max_extent_from_counts_displs(ctx->size, recvcounts, displs) * recv_elem;
+        dtl_status recv_check = require_device_buffer_ptr(recvbuf, recv_bytes);
+        if (recv_check != DTL_SUCCESS) {
+            return recv_check;
+        }
+    }
+
+    std::vector<std::byte> host_send;
+    dtl_status copy_status = copy_device_to_host(
+        host_send, sendbuf, send_bytes, static_cast<cudaStream_t>(ctx->cuda_stream));
+    if (copy_status != DTL_SUCCESS) {
+        return copy_status;
+    }
+
+    std::vector<std::byte> host_recv;
+    if (ctx->rank == root) {
+        host_recv.resize(recv_bytes);
+    }
+    dtl_status gather_status = dtl_gatherv(
+        ctx,
+        host_send.data(), sendcount, senddtype,
+        (ctx->rank == root && recv_bytes > 0) ? host_recv.data() : nullptr,
+        recvcounts, displs, recvdtype, root);
+    if (gather_status != DTL_SUCCESS) {
+        return gather_status;
+    }
+
+    if (ctx->rank == root) {
+        return copy_host_to_device(
+            recvbuf, host_recv.data(), recv_bytes, static_cast<cudaStream_t>(ctx->cuda_stream));
+    }
+    return DTL_SUCCESS;
+#else
+    (void)sendbuf; (void)sendcount; (void)senddtype;
+    (void)recvbuf; (void)recvcounts; (void)displs; (void)recvdtype;
+    (void)root;
+    return DTL_ERROR_BACKEND_UNAVAILABLE;
+#endif
+}
+
+dtl_status dtl_nccl_scatterv_device_ex(dtl_context_t ctx,
+                                        const void* sendbuf,
+                                        const dtl_size_t* sendcounts,
+                                        const dtl_size_t* displs, dtl_dtype senddtype,
+                                        void* recvbuf, dtl_size_t recvcount,
+                                        dtl_dtype recvdtype, dtl_rank_t root,
+                                        dtl_nccl_operation_mode mode) {
+    if (!is_valid_context(ctx)) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+    if (!nccl_mode_valid(mode)) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+    if (mode == DTL_NCCL_MODE_NATIVE_ONLY) {
+        return DTL_ERROR_NOT_SUPPORTED;
+    }
+    if (!sendcounts || !displs) {
+        return DTL_ERROR_NULL_POINTER;
+    }
+
+#if defined(DTL_HAS_NCCL) && defined(DTL_HAS_CUDA)
+    if (!require_nccl_device_context(ctx)) {
+        return DTL_ERROR_NOT_SUPPORTED;
+    }
+    const size_t send_elem = dtl_dtype_size(senddtype);
+    const size_t recv_elem = dtl_dtype_size(recvdtype);
+    if (send_elem == 0 || recv_elem == 0) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+
+    size_t send_bytes = 0;
+    if (ctx->rank == root) {
+        send_bytes = max_extent_from_counts_displs(ctx->size, sendcounts, displs) * send_elem;
+        dtl_status send_check = require_device_buffer_ptr(sendbuf, send_bytes);
+        if (send_check != DTL_SUCCESS) {
+            return send_check;
+        }
+    }
+    const size_t recv_bytes = static_cast<size_t>(recvcount) * recv_elem;
+    dtl_status recv_check = require_device_buffer_ptr(recvbuf, recv_bytes);
+    if (recv_check != DTL_SUCCESS) {
+        return recv_check;
+    }
+
+    std::vector<std::byte> host_send;
+    if (ctx->rank == root) {
+        dtl_status copy_send_status = copy_device_to_host(
+            host_send, sendbuf, send_bytes, static_cast<cudaStream_t>(ctx->cuda_stream));
+        if (copy_send_status != DTL_SUCCESS) {
+            return copy_send_status;
+        }
+    }
+
+    std::vector<std::byte> host_recv(recv_bytes);
+    dtl_status scatter_status = dtl_scatterv(
+        ctx,
+        (ctx->rank == root && send_bytes > 0) ? host_send.data() : nullptr,
+        sendcounts, displs, senddtype,
+        recv_bytes > 0 ? host_recv.data() : nullptr, recvcount,
+        recvdtype, root);
+    if (scatter_status != DTL_SUCCESS) {
+        return scatter_status;
+    }
+    return copy_host_to_device(
+        recvbuf, host_recv.data(), recv_bytes, static_cast<cudaStream_t>(ctx->cuda_stream));
+#else
+    (void)sendbuf; (void)sendcounts; (void)displs; (void)senddtype;
+    (void)recvbuf; (void)recvcount; (void)recvdtype; (void)root;
+    return DTL_ERROR_BACKEND_UNAVAILABLE;
+#endif
+}
+
+dtl_status dtl_nccl_allgatherv_device_ex(dtl_context_t ctx,
+                                          const void* sendbuf, dtl_size_t sendcount,
+                                          dtl_dtype dtype,
+                                          void* recvbuf,
+                                          const dtl_size_t* recvcounts,
+                                          const dtl_size_t* displs,
+                                          dtl_nccl_operation_mode mode) {
+    if (!is_valid_context(ctx)) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+    if (!nccl_mode_valid(mode)) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+    if (mode == DTL_NCCL_MODE_NATIVE_ONLY) {
+        return DTL_ERROR_NOT_SUPPORTED;
+    }
+    if (!recvcounts || !displs) {
+        return DTL_ERROR_NULL_POINTER;
+    }
+
+#if defined(DTL_HAS_NCCL) && defined(DTL_HAS_CUDA)
+    if (!require_nccl_device_context(ctx)) {
+        return DTL_ERROR_NOT_SUPPORTED;
+    }
+    const size_t elem_size = dtl_dtype_size(dtype);
+    if (elem_size == 0) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+    const size_t send_bytes = static_cast<size_t>(sendcount) * elem_size;
+    const size_t recv_bytes =
+        max_extent_from_counts_displs(ctx->size, recvcounts, displs) * elem_size;
+    dtl_status send_check = require_device_buffer_ptr(sendbuf, send_bytes);
+    if (send_check != DTL_SUCCESS) {
+        return send_check;
+    }
+    dtl_status recv_check = require_device_buffer_ptr(recvbuf, recv_bytes);
+    if (recv_check != DTL_SUCCESS) {
+        return recv_check;
+    }
+
+    std::vector<std::byte> host_send;
+    dtl_status copy_send_status = copy_device_to_host(
+        host_send, sendbuf, send_bytes, static_cast<cudaStream_t>(ctx->cuda_stream));
+    if (copy_send_status != DTL_SUCCESS) {
+        return copy_send_status;
+    }
+    std::vector<std::byte> host_recv(recv_bytes);
+    dtl_status gather_status = dtl_allgatherv(
+        ctx, host_send.data(), sendcount, dtype,
+        recv_bytes > 0 ? host_recv.data() : nullptr,
+        recvcounts, displs);
+    if (gather_status != DTL_SUCCESS) {
+        return gather_status;
+    }
+    return copy_host_to_device(
+        recvbuf, host_recv.data(), recv_bytes, static_cast<cudaStream_t>(ctx->cuda_stream));
+#else
+    (void)sendbuf; (void)sendcount; (void)dtype; (void)recvbuf; (void)recvcounts; (void)displs;
+    return DTL_ERROR_BACKEND_UNAVAILABLE;
+#endif
+}
+
+dtl_status dtl_nccl_alltoallv_device_ex(dtl_context_t ctx,
+                                         const void* sendbuf,
+                                         const dtl_size_t* sendcounts,
+                                         const dtl_size_t* sdispls,
+                                         dtl_dtype senddtype,
+                                         void* recvbuf,
+                                         const dtl_size_t* recvcounts,
+                                         const dtl_size_t* rdispls,
+                                         dtl_dtype recvdtype,
+                                         dtl_nccl_operation_mode mode) {
+    if (!is_valid_context(ctx)) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+    if (!nccl_mode_valid(mode)) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+    if (mode == DTL_NCCL_MODE_NATIVE_ONLY) {
+        return DTL_ERROR_NOT_SUPPORTED;
+    }
+    if (!sendcounts || !sdispls || !recvcounts || !rdispls) {
+        return DTL_ERROR_NULL_POINTER;
+    }
+
+#if defined(DTL_HAS_NCCL) && defined(DTL_HAS_CUDA)
+    if (!require_nccl_device_context(ctx)) {
+        return DTL_ERROR_NOT_SUPPORTED;
+    }
+    const size_t send_elem = dtl_dtype_size(senddtype);
+    const size_t recv_elem = dtl_dtype_size(recvdtype);
+    if (send_elem == 0 || recv_elem == 0) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+
+    const size_t send_bytes =
+        max_extent_from_counts_displs(ctx->size, sendcounts, sdispls) * send_elem;
+    const size_t recv_bytes =
+        max_extent_from_counts_displs(ctx->size, recvcounts, rdispls) * recv_elem;
+    dtl_status send_check = require_device_buffer_ptr(sendbuf, send_bytes);
+    if (send_check != DTL_SUCCESS) {
+        return send_check;
+    }
+    dtl_status recv_check = require_device_buffer_ptr(recvbuf, recv_bytes);
+    if (recv_check != DTL_SUCCESS) {
+        return recv_check;
+    }
+
+    std::vector<std::byte> host_send;
+    dtl_status copy_send_status = copy_device_to_host(
+        host_send, sendbuf, send_bytes, static_cast<cudaStream_t>(ctx->cuda_stream));
+    if (copy_send_status != DTL_SUCCESS) {
+        return copy_send_status;
+    }
+    std::vector<std::byte> host_recv(recv_bytes);
+    dtl_status alltoall_status = dtl_alltoallv(
+        ctx,
+        send_bytes > 0 ? host_send.data() : nullptr,
+        sendcounts, sdispls, senddtype,
+        recv_bytes > 0 ? host_recv.data() : nullptr,
+        recvcounts, rdispls, recvdtype);
+    if (alltoall_status != DTL_SUCCESS) {
+        return alltoall_status;
+    }
+    return copy_host_to_device(
+        recvbuf, host_recv.data(), recv_bytes, static_cast<cudaStream_t>(ctx->cuda_stream));
+#else
+    (void)sendbuf; (void)sendcounts; (void)sdispls; (void)senddtype;
+    (void)recvbuf; (void)recvcounts; (void)rdispls; (void)recvdtype;
+    return DTL_ERROR_BACKEND_UNAVAILABLE;
+#endif
+}
+
+dtl_status dtl_nccl_scan_device_ex(dtl_context_t ctx,
+                                    const void* sendbuf, void* recvbuf,
+                                    dtl_size_t count, dtl_dtype dtype,
+                                    dtl_reduce_op op,
+                                    dtl_nccl_operation_mode mode) {
+    if (!is_valid_context(ctx)) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+    if (!nccl_mode_valid(mode)) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+    if (mode == DTL_NCCL_MODE_NATIVE_ONLY) {
+        return DTL_ERROR_NOT_SUPPORTED;
+    }
+
+#if defined(DTL_HAS_NCCL) && defined(DTL_HAS_CUDA)
+    if (!require_nccl_device_context(ctx)) {
+        return DTL_ERROR_NOT_SUPPORTED;
+    }
+    const size_t elem_size = dtl_dtype_size(dtype);
+    if (elem_size == 0) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+    const size_t bytes = static_cast<size_t>(count) * elem_size;
+    dtl_status send_check = require_device_buffer_ptr(sendbuf, bytes);
+    if (send_check != DTL_SUCCESS) {
+        return send_check;
+    }
+    dtl_status recv_check = require_device_buffer_ptr(recvbuf, bytes);
+    if (recv_check != DTL_SUCCESS) {
+        return recv_check;
+    }
+
+    std::vector<std::byte> host_send;
+    std::vector<std::byte> host_recv(bytes);
+    dtl_status copy_send_status = copy_device_to_host(
+        host_send, sendbuf, bytes, static_cast<cudaStream_t>(ctx->cuda_stream));
+    if (copy_send_status != DTL_SUCCESS) {
+        return copy_send_status;
+    }
+    dtl_status scan_status = dtl_scan(
+        ctx, host_send.data(), host_recv.data(), count, dtype, op);
+    if (scan_status != DTL_SUCCESS) {
+        return scan_status;
+    }
+    return copy_host_to_device(
+        recvbuf, host_recv.data(), bytes, static_cast<cudaStream_t>(ctx->cuda_stream));
+#else
+    (void)sendbuf; (void)recvbuf; (void)count; (void)dtype; (void)op;
+    return DTL_ERROR_BACKEND_UNAVAILABLE;
+#endif
+}
+
+dtl_status dtl_nccl_exscan_device_ex(dtl_context_t ctx,
+                                      const void* sendbuf, void* recvbuf,
+                                      dtl_size_t count, dtl_dtype dtype,
+                                      dtl_reduce_op op,
+                                      dtl_nccl_operation_mode mode) {
+    if (!is_valid_context(ctx)) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+    if (!nccl_mode_valid(mode)) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+    if (mode == DTL_NCCL_MODE_NATIVE_ONLY) {
+        return DTL_ERROR_NOT_SUPPORTED;
+    }
+
+#if defined(DTL_HAS_NCCL) && defined(DTL_HAS_CUDA)
+    if (!require_nccl_device_context(ctx)) {
+        return DTL_ERROR_NOT_SUPPORTED;
+    }
+    const size_t elem_size = dtl_dtype_size(dtype);
+    if (elem_size == 0) {
+        return DTL_ERROR_INVALID_ARGUMENT;
+    }
+    const size_t bytes = static_cast<size_t>(count) * elem_size;
+    dtl_status send_check = require_device_buffer_ptr(sendbuf, bytes);
+    if (send_check != DTL_SUCCESS) {
+        return send_check;
+    }
+    dtl_status recv_check = require_device_buffer_ptr(recvbuf, bytes);
+    if (recv_check != DTL_SUCCESS) {
+        return recv_check;
+    }
+
+    std::vector<std::byte> host_send;
+    std::vector<std::byte> host_recv(bytes);
+    dtl_status copy_send_status = copy_device_to_host(
+        host_send, sendbuf, bytes, static_cast<cudaStream_t>(ctx->cuda_stream));
+    if (copy_send_status != DTL_SUCCESS) {
+        return copy_send_status;
+    }
+    dtl_status exscan_status = dtl_exscan(
+        ctx, host_send.data(), host_recv.data(), count, dtype, op);
+    if (exscan_status != DTL_SUCCESS) {
+        return exscan_status;
+    }
+    return copy_host_to_device(
+        recvbuf, host_recv.data(), bytes, static_cast<cudaStream_t>(ctx->cuda_stream));
+#else
+    (void)sendbuf; (void)recvbuf; (void)count; (void)dtype; (void)op;
+    return DTL_ERROR_BACKEND_UNAVAILABLE;
 #endif
 }
 

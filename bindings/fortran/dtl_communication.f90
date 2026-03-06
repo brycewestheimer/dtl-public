@@ -39,6 +39,14 @@ module dtl_communication
     ! Scan/prefix
     public :: dtl_scan, dtl_exscan
 
+    ! Explicit NCCL device collectives
+    public :: dtl_nccl_allreduce_device, dtl_nccl_allreduce_device_ex
+    public :: dtl_nccl_broadcast_device, dtl_nccl_broadcast_device_ex
+    public :: dtl_nccl_barrier_device
+    public :: dtl_nccl_gatherv_device_ex, dtl_nccl_scatterv_device_ex
+    public :: dtl_nccl_allgatherv_device_ex, dtl_nccl_alltoallv_device_ex
+    public :: dtl_nccl_scan_device_ex, dtl_nccl_exscan_device_ex
+
     ! ======================================================================
     ! C API Interface Declarations
     ! ======================================================================
@@ -383,6 +391,158 @@ module dtl_communication
             integer(c_int), value :: dtype
             integer(c_int), value :: op
             integer(c_int) :: dtl_exscan
+        end function
+
+        ! ------------------------------------------------------------------
+        ! Explicit NCCL Device Collectives
+        ! ------------------------------------------------------------------
+
+        function dtl_nccl_allreduce_device(ctx, sendbuf, recvbuf, count, dtype, op) &
+                bind(c, name='dtl_nccl_allreduce_device')
+            import :: c_ptr, c_int, c_int64_t
+            type(c_ptr), value :: ctx
+            type(c_ptr), value :: sendbuf
+            type(c_ptr), value :: recvbuf
+            integer(c_int64_t), value :: count
+            integer(c_int), value :: dtype
+            integer(c_int), value :: op
+            integer(c_int) :: dtl_nccl_allreduce_device
+        end function
+
+        function dtl_nccl_allreduce_device_ex(ctx, sendbuf, recvbuf, count, dtype, op, mode) &
+                bind(c, name='dtl_nccl_allreduce_device_ex')
+            import :: c_ptr, c_int, c_int64_t
+            type(c_ptr), value :: ctx
+            type(c_ptr), value :: sendbuf
+            type(c_ptr), value :: recvbuf
+            integer(c_int64_t), value :: count
+            integer(c_int), value :: dtype
+            integer(c_int), value :: op
+            integer(c_int), value :: mode
+            integer(c_int) :: dtl_nccl_allreduce_device_ex
+        end function
+
+        function dtl_nccl_broadcast_device(ctx, buf, count, dtype, root) &
+                bind(c, name='dtl_nccl_broadcast_device')
+            import :: c_ptr, c_int, c_int64_t
+            type(c_ptr), value :: ctx
+            type(c_ptr), value :: buf
+            integer(c_int64_t), value :: count
+            integer(c_int), value :: dtype
+            integer(c_int), value :: root
+            integer(c_int) :: dtl_nccl_broadcast_device
+        end function
+
+        function dtl_nccl_broadcast_device_ex(ctx, buf, count, dtype, root, mode) &
+                bind(c, name='dtl_nccl_broadcast_device_ex')
+            import :: c_ptr, c_int, c_int64_t
+            type(c_ptr), value :: ctx
+            type(c_ptr), value :: buf
+            integer(c_int64_t), value :: count
+            integer(c_int), value :: dtype
+            integer(c_int), value :: root
+            integer(c_int), value :: mode
+            integer(c_int) :: dtl_nccl_broadcast_device_ex
+        end function
+
+        function dtl_nccl_barrier_device(ctx) &
+                bind(c, name='dtl_nccl_barrier_device')
+            import :: c_ptr, c_int
+            type(c_ptr), value :: ctx
+            integer(c_int) :: dtl_nccl_barrier_device
+        end function
+
+        function dtl_nccl_gatherv_device_ex(ctx, sendbuf, sendcount, senddtype, &
+                                            recvbuf, recvcounts, displs, recvdtype, &
+                                            root, mode) &
+                bind(c, name='dtl_nccl_gatherv_device_ex')
+            import :: c_ptr, c_int, c_int64_t
+            type(c_ptr), value :: ctx
+            type(c_ptr), value :: sendbuf
+            integer(c_int64_t), value :: sendcount
+            integer(c_int), value :: senddtype
+            type(c_ptr), value :: recvbuf
+            integer(c_int64_t), intent(in) :: recvcounts(*)
+            integer(c_int64_t), intent(in) :: displs(*)
+            integer(c_int), value :: recvdtype
+            integer(c_int), value :: root
+            integer(c_int), value :: mode
+            integer(c_int) :: dtl_nccl_gatherv_device_ex
+        end function
+
+        function dtl_nccl_scatterv_device_ex(ctx, sendbuf, sendcounts, displs, senddtype, &
+                                             recvbuf, recvcount, recvdtype, root, mode) &
+                bind(c, name='dtl_nccl_scatterv_device_ex')
+            import :: c_ptr, c_int, c_int64_t
+            type(c_ptr), value :: ctx
+            type(c_ptr), value :: sendbuf
+            integer(c_int64_t), intent(in) :: sendcounts(*)
+            integer(c_int64_t), intent(in) :: displs(*)
+            integer(c_int), value :: senddtype
+            type(c_ptr), value :: recvbuf
+            integer(c_int64_t), value :: recvcount
+            integer(c_int), value :: recvdtype
+            integer(c_int), value :: root
+            integer(c_int), value :: mode
+            integer(c_int) :: dtl_nccl_scatterv_device_ex
+        end function
+
+        function dtl_nccl_allgatherv_device_ex(ctx, sendbuf, sendcount, dtype, &
+                                               recvbuf, recvcounts, displs, mode) &
+                bind(c, name='dtl_nccl_allgatherv_device_ex')
+            import :: c_ptr, c_int, c_int64_t
+            type(c_ptr), value :: ctx
+            type(c_ptr), value :: sendbuf
+            integer(c_int64_t), value :: sendcount
+            integer(c_int), value :: dtype
+            type(c_ptr), value :: recvbuf
+            integer(c_int64_t), intent(in) :: recvcounts(*)
+            integer(c_int64_t), intent(in) :: displs(*)
+            integer(c_int), value :: mode
+            integer(c_int) :: dtl_nccl_allgatherv_device_ex
+        end function
+
+        function dtl_nccl_alltoallv_device_ex(ctx, sendbuf, sendcounts, sdispls, senddtype, &
+                                              recvbuf, recvcounts, rdispls, recvdtype, mode) &
+                bind(c, name='dtl_nccl_alltoallv_device_ex')
+            import :: c_ptr, c_int, c_int64_t
+            type(c_ptr), value :: ctx
+            type(c_ptr), value :: sendbuf
+            integer(c_int64_t), intent(in) :: sendcounts(*)
+            integer(c_int64_t), intent(in) :: sdispls(*)
+            integer(c_int), value :: senddtype
+            type(c_ptr), value :: recvbuf
+            integer(c_int64_t), intent(in) :: recvcounts(*)
+            integer(c_int64_t), intent(in) :: rdispls(*)
+            integer(c_int), value :: recvdtype
+            integer(c_int), value :: mode
+            integer(c_int) :: dtl_nccl_alltoallv_device_ex
+        end function
+
+        function dtl_nccl_scan_device_ex(ctx, sendbuf, recvbuf, count, dtype, op, mode) &
+                bind(c, name='dtl_nccl_scan_device_ex')
+            import :: c_ptr, c_int, c_int64_t
+            type(c_ptr), value :: ctx
+            type(c_ptr), value :: sendbuf
+            type(c_ptr), value :: recvbuf
+            integer(c_int64_t), value :: count
+            integer(c_int), value :: dtype
+            integer(c_int), value :: op
+            integer(c_int), value :: mode
+            integer(c_int) :: dtl_nccl_scan_device_ex
+        end function
+
+        function dtl_nccl_exscan_device_ex(ctx, sendbuf, recvbuf, count, dtype, op, mode) &
+                bind(c, name='dtl_nccl_exscan_device_ex')
+            import :: c_ptr, c_int, c_int64_t
+            type(c_ptr), value :: ctx
+            type(c_ptr), value :: sendbuf
+            type(c_ptr), value :: recvbuf
+            integer(c_int64_t), value :: count
+            integer(c_int), value :: dtype
+            integer(c_int), value :: op
+            integer(c_int), value :: mode
+            integer(c_int) :: dtl_nccl_exscan_device_ex
         end function
 
     end interface

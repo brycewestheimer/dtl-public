@@ -255,8 +255,10 @@ inline void shmem_domain::barrier() {
 #include <backends/nccl/nccl_communicator.hpp>
 #endif
 
-inline nccl_domain::nccl_domain(std::shared_ptr<nccl::nccl_communicator> comm) noexcept
-    : comm_(std::move(comm)) {
+inline nccl_domain::nccl_domain(std::shared_ptr<nccl::nccl_communicator> comm,
+                                nccl_operation_mode mode) noexcept
+    : comm_(std::move(comm))
+    , mode_(mode) {
     if (comm_) {
         rank_ = comm_->rank();
         size_ = comm_->size();
@@ -280,6 +282,64 @@ inline bool nccl_domain::is_root() const noexcept {
     return rank_ == 0;
 }
 
+inline nccl_operation_mode nccl_domain::mode() const noexcept {
+    return mode_;
+}
+
+inline bool nccl_domain::supports_native(nccl_operation op) const noexcept {
+    switch (op) {
+        case nccl_operation::point_to_point:
+        case nccl_operation::barrier:
+        case nccl_operation::broadcast:
+        case nccl_operation::reduce:
+        case nccl_operation::allreduce:
+        case nccl_operation::gather:
+        case nccl_operation::scatter:
+        case nccl_operation::allgather:
+        case nccl_operation::alltoall:
+            return true;
+        case nccl_operation::gatherv:
+        case nccl_operation::scatterv:
+        case nccl_operation::allgatherv:
+        case nccl_operation::alltoallv:
+        case nccl_operation::scan:
+        case nccl_operation::exscan:
+        case nccl_operation::logical_reduction:
+            return false;
+    }
+    return false;
+}
+
+inline bool nccl_domain::supports_hybrid(nccl_operation op) const noexcept {
+    if (supports_native(op)) {
+        return true;
+    }
+    if (mode_ != nccl_operation_mode::hybrid_parity) {
+        return false;
+    }
+    switch (op) {
+        case nccl_operation::gatherv:
+        case nccl_operation::scatterv:
+        case nccl_operation::allgatherv:
+        case nccl_operation::alltoallv:
+        case nccl_operation::scan:
+        case nccl_operation::exscan:
+        case nccl_operation::logical_reduction:
+            return true;
+        case nccl_operation::point_to_point:
+        case nccl_operation::barrier:
+        case nccl_operation::broadcast:
+        case nccl_operation::reduce:
+        case nccl_operation::allreduce:
+        case nccl_operation::gather:
+        case nccl_operation::scatter:
+        case nccl_operation::allgather:
+        case nccl_operation::alltoall:
+            return true;
+    }
+    return false;
+}
+
 inline nccl::nccl_comm_adapter& nccl_domain::adapter() noexcept {
     return *adapter_;
 }
@@ -288,7 +348,8 @@ inline const nccl::nccl_comm_adapter& nccl_domain::adapter() const noexcept {
     return *adapter_;
 }
 
-inline result<nccl_domain> nccl_domain::from_mpi(const mpi_domain& mpi, int device_id) {
+inline result<nccl_domain> nccl_domain::from_mpi(
+    const mpi_domain& mpi, int device_id, nccl_operation_mode mode) {
     if (!mpi.valid()) {
         return result<nccl_domain>::failure(
             status{status_code::invalid_state, no_rank,
@@ -361,9 +422,10 @@ inline result<nccl_domain> nccl_domain::from_mpi(const mpi_domain& mpi, int devi
         return result<nccl_domain>::failure(comm_result.error());
     }
 
-    return result<nccl_domain>::success(nccl_domain(std::move(*comm_result)));
+    return result<nccl_domain>::success(nccl_domain(std::move(*comm_result), mode));
 #else
     (void)device_id;
+    (void)mode;
     return result<nccl_domain>::failure(
         status{status_code::not_supported, no_rank,
                "NCCL domain creation requires both CUDA and MPI backends"});
@@ -371,7 +433,8 @@ inline result<nccl_domain> nccl_domain::from_mpi(const mpi_domain& mpi, int devi
 }
 
 inline result<std::pair<mpi_domain, nccl_domain>>
-nccl_domain::split(const mpi_domain& mpi, int color, int device_id, int key) {
+nccl_domain::split(const mpi_domain& mpi, int color, int device_id, int key,
+                   nccl_operation_mode mode) {
     // Step 1: Split the MPI communicator
     auto mpi_split = mpi.split(color, key);
     if (!mpi_split) {
@@ -379,7 +442,7 @@ nccl_domain::split(const mpi_domain& mpi, int color, int device_id, int key) {
     }
 
     // Step 2: Create new NCCL domain from the split MPI sub-communicator
-    auto nccl_result = nccl_domain::from_mpi(*mpi_split, device_id);
+    auto nccl_result = nccl_domain::from_mpi(*mpi_split, device_id, mode);
     if (!nccl_result) {
         return result<std::pair<mpi_domain, nccl_domain>>::failure(nccl_result.error());
     }

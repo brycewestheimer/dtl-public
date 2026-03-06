@@ -195,6 +195,42 @@ typedef enum dtl_reduce_op {
 } dtl_reduce_op;
 
 /* ==========================================================================
+ * NCCL Mode / Capability Enumerations
+ * ========================================================================== */
+
+/**
+ * @brief NCCL execution mode for explicit NCCL contexts/APIs
+ */
+typedef enum dtl_nccl_operation_mode {
+    /** @brief Only NCCL-native operations are allowed */
+    DTL_NCCL_MODE_NATIVE_ONLY = 0,
+    /** @brief Allow explicit hybrid MPI-assisted parity paths */
+    DTL_NCCL_MODE_HYBRID_PARITY = 1
+} dtl_nccl_operation_mode;
+
+/**
+ * @brief NCCL operation family for capability introspection
+ */
+typedef enum dtl_nccl_operation {
+    DTL_NCCL_OP_POINT_TO_POINT = 0,
+    DTL_NCCL_OP_BARRIER = 1,
+    DTL_NCCL_OP_BROADCAST = 2,
+    DTL_NCCL_OP_REDUCE = 3,
+    DTL_NCCL_OP_ALLREDUCE = 4,
+    DTL_NCCL_OP_GATHER = 5,
+    DTL_NCCL_OP_SCATTER = 6,
+    DTL_NCCL_OP_ALLGATHER = 7,
+    DTL_NCCL_OP_ALLTOALL = 8,
+    DTL_NCCL_OP_GATHERV = 9,
+    DTL_NCCL_OP_SCATTERV = 10,
+    DTL_NCCL_OP_ALLGATHERV = 11,
+    DTL_NCCL_OP_ALLTOALLV = 12,
+    DTL_NCCL_OP_SCAN = 13,
+    DTL_NCCL_OP_EXSCAN = 14,
+    DTL_NCCL_OP_LOGICAL_REDUCTION = 15
+} dtl_nccl_operation;
+
+/* ==========================================================================
  * Determinism Policy Enumerations (ARC-0010)
  * ========================================================================== */
 

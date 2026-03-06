@@ -37,6 +37,34 @@ struct mpi_domain_tag {};
 /// @brief Tag type for NCCL communication domain
 struct nccl_domain_tag {};
 
+/// @brief NCCL operation mode
+/// @details `native_only` rejects operations that NCCL cannot implement directly.
+///          `hybrid_parity` allows explicit hybrid MPI-assisted paths.
+enum class nccl_operation_mode {
+    native_only = 0,
+    hybrid_parity = 1
+};
+
+/// @brief NCCL feature families for capability queries
+enum class nccl_operation {
+    point_to_point = 0,
+    barrier,
+    broadcast,
+    reduce,
+    allreduce,
+    gather,
+    scatter,
+    allgather,
+    alltoall,
+    gatherv,
+    scatterv,
+    allgatherv,
+    alltoallv,
+    scan,
+    exscan,
+    logical_reduction
+};
+
 /// @brief Tag type for SHMEM communication domain
 struct shmem_domain_tag {};
 
@@ -288,7 +316,9 @@ public:
     nccl_domain() noexcept = default;
 
     /// @brief Construct from existing NCCL communicator
-    explicit nccl_domain(std::shared_ptr<nccl::nccl_communicator> comm) noexcept;
+    explicit nccl_domain(
+        std::shared_ptr<nccl::nccl_communicator> comm,
+        nccl_operation_mode mode = nccl_operation_mode::hybrid_parity) noexcept;
 
     /// @brief Get this process's rank
     [[nodiscard]] rank_t rank() const noexcept;
@@ -301,6 +331,15 @@ public:
 
     /// @brief Check if this is the root rank
     [[nodiscard]] bool is_root() const noexcept;
+
+    /// @brief Get NCCL operation mode
+    [[nodiscard]] nccl_operation_mode mode() const noexcept;
+
+    /// @brief Check whether an operation is supported natively by NCCL
+    [[nodiscard]] bool supports_native(nccl_operation op) const noexcept;
+
+    /// @brief Check whether an operation is supported under hybrid mode
+    [[nodiscard]] bool supports_hybrid(nccl_operation op) const noexcept;
 
     /// @brief Get the underlying NCCL communicator
     /// @return Reference to the NCCL communicator
@@ -326,23 +365,29 @@ public:
     /// @brief Factory: create NCCL domain from MPI domain
     /// @param mpi MPI domain to derive rank/size from
     /// @param device_id CUDA device ID for this rank
+    /// @param mode NCCL operation mode
     /// @return Result containing new nccl_domain
-    [[nodiscard]] static result<nccl_domain> from_mpi(const mpi_domain& mpi, int device_id);
+    [[nodiscard]] static result<nccl_domain> from_mpi(
+        const mpi_domain& mpi, int device_id,
+        nccl_operation_mode mode = nccl_operation_mode::hybrid_parity);
 
     /// @brief Split NCCL domain via MPI split + new NCCL communicator
     /// @param mpi MPI domain used for bootstrapping the split
     /// @param color Color for grouping (ranks with same color in same group)
     /// @param device_id CUDA device ID for this rank in the new communicator
     /// @param key Ordering key within color group (default 0)
+    /// @param mode NCCL operation mode for the split domain
     /// @return Result containing pair of (new mpi_domain, new nccl_domain) for the sub-group
     /// @note This API is currently C++-only. C, Python, and Fortran bindings do
     ///       not expose an equivalent split operation.
     [[nodiscard]] static result<std::pair<mpi_domain, nccl_domain>>
-    split(const mpi_domain& mpi, int color, int device_id, int key = 0);
+    split(const mpi_domain& mpi, int color, int device_id, int key = 0,
+          nccl_operation_mode mode = nccl_operation_mode::hybrid_parity);
 
 private:
     std::shared_ptr<nccl::nccl_communicator> comm_;
     std::shared_ptr<nccl::nccl_comm_adapter> adapter_;
+    nccl_operation_mode mode_{nccl_operation_mode::hybrid_parity};
     rank_t rank_{0};
     rank_t size_{1};
 };
@@ -360,14 +405,22 @@ public:
     [[nodiscard]] rank_t size() const noexcept { return 1; }
     [[nodiscard]] bool valid() const noexcept { return false; }
     [[nodiscard]] bool is_root() const noexcept { return true; }
+    [[nodiscard]] nccl_operation_mode mode() const noexcept {
+        return nccl_operation_mode::hybrid_parity;
+    }
+    [[nodiscard]] bool supports_native(nccl_operation) const noexcept { return false; }
+    [[nodiscard]] bool supports_hybrid(nccl_operation) const noexcept { return false; }
 
-    [[nodiscard]] static result<nccl_domain> from_mpi(const mpi_domain&, int) {
+    [[nodiscard]] static result<nccl_domain> from_mpi(
+        const mpi_domain&, int,
+        nccl_operation_mode = nccl_operation_mode::hybrid_parity) {
         return result<nccl_domain>::failure(
             status{status_code::not_supported, no_rank, "NCCL not enabled"});
     }
 
     [[nodiscard]] static result<std::pair<mpi_domain, nccl_domain>>
-    split(const mpi_domain&, int, int, int = 0) {
+    split(const mpi_domain&, int, int, int = 0,
+          nccl_operation_mode = nccl_operation_mode::hybrid_parity) {
         return result<std::pair<mpi_domain, nccl_domain>>::failure(
             status{status_code::not_supported, no_rank, "NCCL not enabled"});
     }

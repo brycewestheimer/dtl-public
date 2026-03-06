@@ -370,21 +370,88 @@ TEST(CBindingsContext, WithNccl) {
 
     dtl_context_t nccl_ctx = nullptr;
     dtl_status status = dtl_context_with_nccl(ctx, /*device_id=*/0, &nccl_ctx);
-    EXPECT_EQ(status, DTL_ERROR_NOT_SUPPORTED);
-    EXPECT_EQ(nccl_ctx, nullptr);
+    if (status == DTL_SUCCESS) {
+        EXPECT_NE(nccl_ctx, nullptr);
+        EXPECT_EQ(dtl_context_has_nccl(nccl_ctx), 1);
+        EXPECT_EQ(dtl_context_nccl_mode(nccl_ctx), DTL_NCCL_MODE_HYBRID_PARITY);
+        dtl_context_destroy(nccl_ctx);
+    } else {
+        EXPECT_TRUE(status == DTL_ERROR_BACKEND_UNAVAILABLE ||
+                    status == DTL_ERROR_NOT_SUPPORTED ||
+                    status == DTL_ERROR_INVALID_ARGUMENT ||
+                    status == DTL_ERROR_MPI ||
+                    status == DTL_ERROR_NCCL ||
+                    status == DTL_ERROR_CUDA);
+        EXPECT_EQ(nccl_ctx, nullptr);
+    }
 
     dtl_context_destroy(ctx);
 }
 
-TEST(CBindingsContext, SplitNcclIsNotSupported) {
+TEST(CBindingsContext, SplitNccl) {
     dtl_context_t ctx = nullptr;
     ASSERT_EQ(dtl_context_create_default(&ctx), DTL_SUCCESS);
 
-    dtl_context_t split_ctx = nullptr;
-    dtl_status status = dtl_context_split_nccl(ctx, /*color=*/0, /*key=*/0, &split_ctx);
+    dtl_context_t nccl_ctx = nullptr;
+    dtl_status create_status = dtl_context_with_nccl(ctx, /*device_id=*/0, &nccl_ctx);
+    if (create_status != DTL_SUCCESS) {
+        dtl_context_destroy(ctx);
+        GTEST_SKIP() << "NCCL context unavailable in this environment";
+    }
 
-    EXPECT_EQ(status, DTL_ERROR_NOT_SUPPORTED);
-    EXPECT_EQ(split_ctx, nullptr);
+    dtl_context_t split_ctx = nullptr;
+    dtl_status status = dtl_context_split_nccl(nccl_ctx, /*color=*/0, /*key=*/0, &split_ctx);
+    if (status == DTL_SUCCESS) {
+        EXPECT_NE(split_ctx, nullptr);
+        EXPECT_EQ(dtl_context_has_nccl(split_ctx), 1);
+        dtl_context_destroy(split_ctx);
+    } else {
+        EXPECT_TRUE(status == DTL_ERROR_NOT_SUPPORTED ||
+                    status == DTL_ERROR_BACKEND_UNAVAILABLE ||
+                    status == DTL_ERROR_INVALID_ARGUMENT ||
+                    status == DTL_ERROR_MPI ||
+                    status == DTL_ERROR_NCCL ||
+                    status == DTL_ERROR_CUDA);
+        EXPECT_EQ(split_ctx, nullptr);
+    }
+
+    dtl_context_destroy(nccl_ctx);
+    dtl_context_destroy(ctx);
+}
+
+TEST(CBindingsContext, NcclCapabilityQueriesReturnStableValues) {
+    dtl_context_t ctx = nullptr;
+    ASSERT_EQ(dtl_context_create_default(&ctx), DTL_SUCCESS);
+
+    // Without NCCL, mode should be -1 and capability queries should be 0.
+    EXPECT_EQ(dtl_context_nccl_mode(ctx), -1);
+    EXPECT_EQ(dtl_context_nccl_supports_native(ctx, DTL_NCCL_OP_ALLREDUCE), 0);
+    EXPECT_EQ(dtl_context_nccl_supports_hybrid(ctx, DTL_NCCL_OP_SCAN), 0);
+
+    dtl_context_destroy(ctx);
+}
+
+TEST(CBindingsContext, WithNcclExNativeOnlyMode) {
+    dtl_context_t ctx = nullptr;
+    ASSERT_EQ(dtl_context_create_default(&ctx), DTL_SUCCESS);
+
+    dtl_context_t nccl_ctx = nullptr;
+    dtl_status status = dtl_context_with_nccl_ex(
+        ctx, /*device_id=*/0, DTL_NCCL_MODE_NATIVE_ONLY, &nccl_ctx);
+
+    if (status == DTL_SUCCESS) {
+        EXPECT_EQ(dtl_context_nccl_mode(nccl_ctx), DTL_NCCL_MODE_NATIVE_ONLY);
+        EXPECT_EQ(dtl_context_nccl_supports_native(nccl_ctx, DTL_NCCL_OP_ALLREDUCE), 1);
+        EXPECT_EQ(dtl_context_nccl_supports_hybrid(nccl_ctx, DTL_NCCL_OP_SCAN), 0);
+        dtl_context_destroy(nccl_ctx);
+    } else {
+        EXPECT_TRUE(status == DTL_ERROR_BACKEND_UNAVAILABLE ||
+                    status == DTL_ERROR_NOT_SUPPORTED ||
+                    status == DTL_ERROR_INVALID_ARGUMENT ||
+                    status == DTL_ERROR_MPI ||
+                    status == DTL_ERROR_NCCL ||
+                    status == DTL_ERROR_CUDA);
+    }
 
     dtl_context_destroy(ctx);
 }

@@ -29,10 +29,14 @@ module dtl_context
     ! Domain queries (V1.3.0)
     public :: dtl_context_has_mpi, dtl_context_has_cuda
     public :: dtl_context_has_nccl, dtl_context_has_shmem
+    public :: dtl_context_nccl_mode
+    public :: dtl_context_nccl_supports_native
+    public :: dtl_context_nccl_supports_hybrid
 
     ! Context transformations (V1.3.0)
     public :: dtl_context_with_cuda, dtl_context_with_nccl
     public :: dtl_context_split_nccl
+    public :: dtl_context_with_nccl_ex, dtl_context_split_nccl_ex
 
     ! Policy queries
     public :: dtl_context_determinism_mode
@@ -180,6 +184,29 @@ module dtl_context
             integer(c_int) :: dtl_context_has_nccl
         end function
 
+        function dtl_context_nccl_mode(ctx) &
+                bind(c, name='dtl_context_nccl_mode')
+            import :: c_ptr, c_int
+            type(c_ptr), value :: ctx
+            integer(c_int) :: dtl_context_nccl_mode
+        end function
+
+        function dtl_context_nccl_supports_native(ctx, op) &
+                bind(c, name='dtl_context_nccl_supports_native')
+            import :: c_ptr, c_int
+            type(c_ptr), value :: ctx
+            integer(c_int), value :: op
+            integer(c_int) :: dtl_context_nccl_supports_native
+        end function
+
+        function dtl_context_nccl_supports_hybrid(ctx, op) &
+                bind(c, name='dtl_context_nccl_supports_hybrid')
+            import :: c_ptr, c_int
+            type(c_ptr), value :: ctx
+            integer(c_int), value :: op
+            integer(c_int) :: dtl_context_nccl_supports_hybrid
+        end function
+
         function dtl_context_has_shmem(ctx) &
                 bind(c, name='dtl_context_has_shmem')
             import :: c_ptr, c_int
@@ -211,6 +238,17 @@ module dtl_context
             integer(c_int) :: dtl_context_with_nccl
         end function
 
+        !> Create a new context with NCCL support and explicit mode
+        function dtl_context_with_nccl_ex(ctx, device_id, mode, out) &
+                bind(c, name='dtl_context_with_nccl_ex')
+            import :: c_ptr, c_int
+            type(c_ptr), value :: ctx
+            integer(c_int), value :: device_id
+            integer(c_int), value :: mode
+            type(c_ptr), intent(out) :: out
+            integer(c_int) :: dtl_context_with_nccl_ex
+        end function
+
         !> Split context creating sub-groups with NCCL communicators
         function dtl_context_split_nccl(ctx, color, key, out) &
                 bind(c, name='dtl_context_split_nccl')
@@ -220,6 +258,19 @@ module dtl_context
             integer(c_int), value :: key
             type(c_ptr), intent(out) :: out
             integer(c_int) :: dtl_context_split_nccl
+        end function
+
+        !> Split context creating sub-groups with NCCL communicators and explicit mode/device
+        function dtl_context_split_nccl_ex(ctx, color, key, device_id, mode, out) &
+                bind(c, name='dtl_context_split_nccl_ex')
+            import :: c_ptr, c_int
+            type(c_ptr), value :: ctx
+            integer(c_int), value :: color
+            integer(c_int), value :: key
+            integer(c_int), value :: device_id
+            integer(c_int), value :: mode
+            type(c_ptr), intent(out) :: out
+            integer(c_int) :: dtl_context_split_nccl_ex
         end function
 
         ! ------------------------------------------------------------------

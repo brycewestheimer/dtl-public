@@ -367,15 +367,19 @@ public:
 
     /// @brief Add NCCL domain from MPI to create new context
     /// @param device_id CUDA device ID for this rank
+    /// @param mode NCCL operation mode
     /// @return Result containing new context with additional nccl_domain
     /// @pre has_mpi() must be true
-    [[nodiscard]] auto with_nccl(int device_id) const
+    [[nodiscard]] auto with_nccl(
+        int device_id,
+        nccl_operation_mode mode = nccl_operation_mode::hybrid_parity) const
         -> result<detail::append_domain_t<context, nccl_domain>>
         requires (has_mpi())
     {
         using new_context_t = detail::append_domain_t<context, nccl_domain>;
 
-        auto nccl_result = nccl_domain::from_mpi(std::get<mpi_domain>(domains_), device_id);
+        auto nccl_result = nccl_domain::from_mpi(
+            std::get<mpi_domain>(domains_), device_id, mode);
         if (!nccl_result) {
             return result<new_context_t>::failure(nccl_result.error());
         }
@@ -389,15 +393,16 @@ public:
     /// @param color Color for grouping (ranks with same color in same group)
     /// @param device_id CUDA device ID for this rank in the new NCCL communicator
     /// @param key Ordering key within color group (default 0)
+    /// @param mode NCCL operation mode for the split domain
     /// @return Result containing new context with split MPI and NCCL domains
     /// @pre has_mpi() && has_nccl() must be true
-    /// @note This API is currently C++-only. Language bindings only expose
-    ///       `with_nccl()` at this time.
-    [[nodiscard]] result<context> split_nccl(int color, int device_id, int key = 0) const
+    [[nodiscard]] result<context> split_nccl(
+        int color, int device_id, int key = 0,
+        nccl_operation_mode mode = nccl_operation_mode::hybrid_parity) const
         requires (has_mpi() && has_nccl())
     {
         auto split_result = nccl_domain::split(
-            std::get<mpi_domain>(domains_), color, device_id, key);
+            std::get<mpi_domain>(domains_), color, device_id, key, mode);
         if (!split_result) {
             return result<context>::failure(split_result.error());
         }
