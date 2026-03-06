@@ -181,7 +181,6 @@ nth_element([[maybe_unused]] ExecutionPolicy&& policy,
     }
 
     rank_t num_ranks = comm.size();
-    rank_t my_rank = comm.rank();
 
     // Single rank case: use standard nth_element
     if (num_ranks <= 1) {
@@ -197,108 +196,49 @@ nth_element([[maybe_unused]] ExecutionPolicy&& policy,
         return result;
     }
 
-    // Iterative distributed quickselect
     auto local_v = container.local_view();
     size_type local_size = static_cast<size_type>(local_v.size());
+    // Correctness-first fallback: gather the global sequence on every rank,
+    // partition it locally with std::nth_element, then restore each rank's
+    // original block partition from the partitioned global sequence.
+    int my_count = static_cast<int>(local_size);
+    std::vector<int> recv_counts(static_cast<size_type>(num_ranks), 0);
+    comm.allgather(&my_count, recv_counts.data(), sizeof(int));
 
-    // Work on indices: [lo, hi) in global space
-    index_t global_lo = 0;
-    index_t global_hi = static_cast<index_t>(global_size);
+    std::vector<int> recv_displs(static_cast<size_type>(num_ranks), 0);
+    std::exclusive_scan(recv_counts.begin(), recv_counts.end(),
+                        recv_displs.begin(), 0);
 
-    // Maximum iterations to prevent infinite loops
-    constexpr int max_iterations = 100;
-
-    for (int iter = 0; iter < max_iterations && global_lo < global_hi; ++iter) {
-        // Step 1: Select pivot - gather samples and pick median
-        // Sample local data (or use sentinel if empty)
-        std::vector<value_type> local_samples;
-        size_type sample_count = std::min(local_size, static_cast<size_type>(5));
-
-        for (size_type i = 0; i < local_size && local_samples.size() < sample_count; ++i) {
-            local_samples.push_back(local_v[i]);
-        }
-
-        // Gather sample counts
-        int my_sample_count = static_cast<int>(local_samples.size());
-        std::vector<int> sample_counts(static_cast<size_type>(num_ranks));
-        comm.allgather(&my_sample_count, sample_counts.data(), sizeof(int));
-
-        std::vector<int> sample_displs(static_cast<size_type>(num_ranks));
-        std::exclusive_scan(sample_counts.begin(), sample_counts.end(),
-                            sample_displs.begin(), 0);
-
-        size_type total_samples = static_cast<size_type>(
-            sample_displs.back() + sample_counts.back());
-
-        if (total_samples == 0) {
-            // No data anywhere, return invalid
-            return result;
-        }
-
-        // Gather all samples
-        std::vector<value_type> all_samples(total_samples);
-        comm.allgatherv(local_samples.data(), static_cast<size_type>(my_sample_count),
-                        all_samples.data(), sample_counts.data(), sample_displs.data(),
-                        sizeof(value_type));
-
-        // Select pivot as median of samples
-        std::sort(all_samples.begin(), all_samples.end(), comp);
-        value_type pivot = all_samples[total_samples / 2];
-
-        // Step 2: Count elements <= pivot locally
-        long local_le_count = 0;  // less than or equal
-        long local_lt_count = 0;  // strictly less than
-
-        for (size_type i = 0; i < local_size; ++i) {
-            if (comp(local_v[i], pivot)) {
-                ++local_lt_count;
-                ++local_le_count;
-            } else if (!comp(pivot, local_v[i])) {
-                // Equal to pivot
-                ++local_le_count;
-            }
-        }
-
-        // Step 3: Allreduce to get global counts
-        long global_lt_count = comm.template allreduce_sum_value<long>(local_lt_count);
-        long global_le_count = comm.template allreduce_sum_value<long>(local_le_count);
-
-        // Step 4: Check if pivot is the nth element
-        // Element at position n should satisfy: global_lt_count <= n < global_le_count
-        if (global_lt_count <= n && n < global_le_count) {
-            // Found! The pivot is the nth element
-            result.value = pivot;
-            result.global_index = n;
-            result.owner_rank = no_rank;  // Could be on multiple ranks
-            result.valid = true;
-
-            // Partition local data for the post-condition
-            std::nth_element(local_v.begin(), local_v.begin() + std::min(local_size, static_cast<size_type>(n)),
-                             local_v.end(), comp);
-            return result;
-        }
-
-        // Step 5: Recurse on appropriate half
-        if (n < global_lt_count) {
-            // nth element is in the "less than pivot" partition
-            global_hi = global_lt_count;
-        } else {
-            // nth element is in the "greater than pivot" partition
-            global_lo = global_le_count;
-        }
+    const size_type total_count = recv_counts.empty()
+        ? 0
+        : static_cast<size_type>(recv_displs.back() + recv_counts.back());
+    if (total_count == 0) {
+        return result;
     }
 
-    // Fallback: if iteration limit reached, do local nth_element
-    if (local_size > 0) {
-        index_t local_n = std::min(n, static_cast<index_t>(local_size - 1));
-        if (local_n >= 0) {
-            std::nth_element(local_v.begin(), local_v.begin() + local_n,
-                             local_v.end(), comp);
-            result.value = *(local_v.begin() + local_n);
-            result.global_index = n;
-            result.owner_rank = my_rank;
-            result.valid = true;
-        }
+    std::vector<value_type> global_values(total_count);
+    comm.allgatherv(local_v.begin(), local_size,
+                    global_values.data(), recv_counts.data(), recv_displs.data(),
+                    sizeof(value_type));
+
+    auto nth_it = global_values.begin() + n;
+    std::nth_element(global_values.begin(), nth_it, global_values.end(), comp);
+
+    result.value = *nth_it;
+    result.global_index = n;
+    result.valid = true;
+
+    const auto global_offset = static_cast<size_type>(local_v.global_offset());
+    const auto owner_it = std::upper_bound(recv_displs.begin(), recv_displs.end(),
+                                           static_cast<int>(n));
+    if (owner_it != recv_displs.begin()) {
+        result.owner_rank = static_cast<rank_t>(std::distance(recv_displs.begin(), owner_it) - 1);
+    } else {
+        result.owner_rank = 0;
+    }
+
+    for (size_type i = 0; i < local_size; ++i) {
+        local_v[i] = std::move(global_values[global_offset + i]);
     }
 
     return result;

@@ -47,6 +47,10 @@ protected:
 // =============================================================================
 
 TEST_F(ScanMpiTest, InclusiveScanTwoRanks) {
+    if (size_ != 2) {
+        GTEST_SKIP() << "Test requires exactly 2 MPI ranks";
+    }
+
     // Each rank contributes 2 elements
     distributed_vector<int> input(4, 1, *comm_);
     distributed_vector<int> output(4, *comm_);
@@ -106,6 +110,10 @@ TEST_F(ScanMpiTest, InclusiveScanFourRanks) {
 // =============================================================================
 
 TEST_F(ScanMpiTest, ExclusiveScanTwoRanks) {
+    if (size_ != 2) {
+        GTEST_SKIP() << "Test requires exactly 2 MPI ranks";
+    }
+
     // Each rank contributes 2 elements
     distributed_vector<int> input(4, 1, *comm_);
     distributed_vector<int> output(4, *comm_);
@@ -138,6 +146,10 @@ TEST_F(ScanMpiTest, ExclusiveScanTwoRanks) {
 // =============================================================================
 
 TEST_F(ScanMpiTest, TransformInclusiveScanTwoRanks) {
+    if (size_ != 2) {
+        GTEST_SKIP() << "Test requires exactly 2 MPI ranks";
+    }
+
     // Each rank contributes 2 elements
     distributed_vector<int> input(4, *comm_);
     distributed_vector<int> output(4, *comm_);
@@ -207,6 +219,10 @@ TEST_F(ScanMpiTest, TransformInclusiveScanMultiplication) {
 // =============================================================================
 
 TEST_F(ScanMpiTest, TransformExclusiveScanTwoRanks) {
+    if (size_ != 2) {
+        GTEST_SKIP() << "Test requires exactly 2 MPI ranks";
+    }
+
     // Each rank contributes 2 elements
     distributed_vector<int> input(4, *comm_);
     distributed_vector<int> output(4, *comm_);

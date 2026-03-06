@@ -45,6 +45,10 @@ protected:
         MPI_Comm_rank(MPI_COMM_WORLD, &rank_);
         MPI_Comm_size(MPI_COMM_WORLD, &size_);
 
+        if (device_count < size_) {
+            GTEST_SKIP() << "nccl_domain integration tests require at least one CUDA device per MPI rank";
+        }
+
         // Device assignment: rank % device_count
         device_id_ = rank_ % device_count;
         cudaSetDevice(device_id_);

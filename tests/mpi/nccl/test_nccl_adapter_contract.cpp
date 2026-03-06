@@ -43,6 +43,10 @@ protected:
             GTEST_SKIP() << "NCCL adapter tests require at least 2 MPI ranks";
         }
 
+        if (device_count < size_) {
+            GTEST_SKIP() << "NCCL adapter integration tests require at least one CUDA device per MPI rank";
+        }
+
         device_id_ = rank_ % device_count;
         base_ctx_ = std::make_unique<mpi_context>();
         ASSERT_TRUE(base_ctx_->valid());

@@ -44,6 +44,10 @@ protected:
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
         MPI_Comm_size(MPI_COMM_WORLD, &size);
 
+        if (device_count < size) {
+            GTEST_SKIP() << "nccl_domain::from_mpi integration tests require at least one CUDA device per MPI rank";
+        }
+
         // Each rank uses device_id = rank % device_count
         device_id_ = rank % device_count;
     }

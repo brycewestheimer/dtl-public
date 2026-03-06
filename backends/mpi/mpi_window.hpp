@@ -231,19 +231,16 @@ public:
             return make_error<void>(status_code::invalid_state, "Invalid window");
         }
 
-        int mpi_result = MPI_Get(
-            origin,
-            static_cast<int>(size),
-            MPI_BYTE,
-            target,
-            static_cast<MPI_Aint>(target_offset),
-            static_cast<int>(size),
-            MPI_BYTE,
-            win_
-        );
+        MPI_Request request = MPI_REQUEST_NULL;
+        auto result = rget_impl(origin, size, target, target_offset, &request);
+        if (result.has_error()) {
+            return result;
+        }
 
-        if (mpi_result != MPI_SUCCESS) {
-            return make_error<void>(status_code::communication_error, "MPI_Get failed");
+        result = wait_request(&request);
+        if (result.has_error()) {
+            return make_error<void>(status_code::communication_error,
+                                    "blocking MPI get completion failed");
         }
         return {};
 #else
