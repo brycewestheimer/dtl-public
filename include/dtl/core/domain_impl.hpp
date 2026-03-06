@@ -30,6 +30,7 @@
 
 #if DTL_ENABLE_NCCL
 #include <nccl.h>
+#include <backends/nccl/nccl_comm_adapter.hpp>
 #endif
 
 namespace dtl {
@@ -257,9 +258,9 @@ inline void shmem_domain::barrier() {
 inline nccl_domain::nccl_domain(std::shared_ptr<nccl::nccl_communicator> comm) noexcept
     : comm_(std::move(comm)) {
     if (comm_) {
-        // Query rank/size from NCCL communicator
         rank_ = comm_->rank();
         size_ = comm_->size();
+        adapter_ = std::make_shared<nccl::nccl_comm_adapter>(comm_);
     }
 }
 
@@ -277,6 +278,14 @@ inline bool nccl_domain::valid() const noexcept {
 
 inline bool nccl_domain::is_root() const noexcept {
     return rank_ == 0;
+}
+
+inline nccl::nccl_comm_adapter& nccl_domain::adapter() noexcept {
+    return *adapter_;
+}
+
+inline const nccl::nccl_comm_adapter& nccl_domain::adapter() const noexcept {
+    return *adapter_;
 }
 
 inline result<nccl_domain> nccl_domain::from_mpi(const mpi_domain& mpi, int device_id) {

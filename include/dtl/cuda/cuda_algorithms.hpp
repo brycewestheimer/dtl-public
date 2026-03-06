@@ -29,6 +29,7 @@
 #include <thrust/functional.h>
 #include <thrust/extrema.h>
 #include <thrust/logical.h>
+#include <thrust/scan.h>
 #endif
 
 #include <functional>
@@ -401,6 +402,75 @@ bool none_of_device(const T* data, size_type n, Pred pred,
 }
 
 // ============================================================================
+// Scan (Prefix Sum) Operations
+// ============================================================================
+
+/// @brief GPU inclusive scan using Thrust
+/// @tparam T Element type
+/// @tparam BinaryOp Scan operation type (must be __device__ callable)
+/// @param in Device pointer to input data
+/// @param out Device pointer to output data
+/// @param n Number of elements
+/// @param op Binary scan operation
+/// @param stream CUDA stream for execution
+template <typename T, typename BinaryOp>
+void inclusive_scan_device(const T* in, T* out, size_type n, BinaryOp op,
+                           cudaStream_t stream = 0) {
+    if (n == 0) return;
+
+    thrust::device_ptr<const T> in_begin(in);
+    thrust::device_ptr<const T> in_end = in_begin + n;
+    thrust::device_ptr<T> out_begin(out);
+
+    thrust::inclusive_scan(thrust::cuda::par.on(stream), in_begin, in_end, out_begin, op);
+}
+
+/// @brief GPU exclusive scan using Thrust
+/// @tparam T Element type
+/// @tparam BinaryOp Scan operation type (must be __device__ callable)
+/// @param in Device pointer to input data
+/// @param out Device pointer to output data
+/// @param n Number of elements
+/// @param init Initial value for exclusive scan
+/// @param op Binary scan operation
+/// @param stream CUDA stream for execution
+template <typename T, typename BinaryOp>
+void exclusive_scan_device(const T* in, T* out, size_type n, T init, BinaryOp op,
+                           cudaStream_t stream = 0) {
+    if (n == 0) return;
+
+    thrust::device_ptr<const T> in_begin(in);
+    thrust::device_ptr<const T> in_end = in_begin + n;
+    thrust::device_ptr<T> out_begin(out);
+
+    thrust::exclusive_scan(thrust::cuda::par.on(stream), in_begin, in_end, out_begin, init, op);
+}
+
+/// @brief GPU inclusive prefix sum (convenience wrapper)
+/// @tparam T Element type
+/// @param in Device pointer to input data
+/// @param out Device pointer to output data
+/// @param n Number of elements
+/// @param stream CUDA stream for execution
+template <typename T>
+void inclusive_scan_sum_device(const T* in, T* out, size_type n,
+                               cudaStream_t stream = 0) {
+    inclusive_scan_device(in, out, n, thrust::plus<T>{}, stream);
+}
+
+/// @brief GPU exclusive prefix sum (convenience wrapper)
+/// @tparam T Element type
+/// @param in Device pointer to input data
+/// @param out Device pointer to output data
+/// @param n Number of elements
+/// @param stream CUDA stream for execution
+template <typename T>
+void exclusive_scan_sum_device(const T* in, T* out, size_type n,
+                                cudaStream_t stream = 0) {
+    exclusive_scan_device(in, out, n, T{0}, thrust::plus<T>{}, stream);
+}
+
+// ============================================================================
 // Synchronization Helpers
 // ============================================================================
 
@@ -463,6 +533,26 @@ void fill_device(T*, size_type, const T&, void* = nullptr) {
 
 template <typename T>
 void copy_device(const T*, T*, size_type, void* = nullptr) {
+    // No-op when CUDA is disabled
+}
+
+template <typename T, typename BinaryOp>
+void inclusive_scan_device(const T*, T*, size_type, BinaryOp, void* = nullptr) {
+    // No-op when CUDA is disabled
+}
+
+template <typename T, typename BinaryOp>
+void exclusive_scan_device(const T*, T*, size_type, T, BinaryOp, void* = nullptr) {
+    // No-op when CUDA is disabled
+}
+
+template <typename T>
+void inclusive_scan_sum_device(const T*, T*, size_type, void* = nullptr) {
+    // No-op when CUDA is disabled
+}
+
+template <typename T>
+void exclusive_scan_sum_device(const T*, T*, size_type, void* = nullptr) {
     // No-op when CUDA is disabled
 }
 

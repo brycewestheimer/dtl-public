@@ -202,11 +202,75 @@ ctest -L nccl --output-on-failure
 mpirun -n 2 ./tests/mpi/nccl/test_nccl_domain_from_mpi
 ```
 
+### Concept-Compliant Adapter
+
+The `nccl_comm_adapter` wraps `nccl_communicator` and satisfies the `Communicator`,
+`CollectiveCommunicator`, and `ReducingCommunicator` concepts. This is the recommended
+interface for generic code that works with any backend:
+
+```cpp
+#include <backends/nccl/nccl_comm_adapter.hpp>
+
+// Get from domain
+auto& adapter = nccl_domain.adapter();
+
+// Works with any code expecting a Communicator
+adapter.send(buf, count, dest, tag);
+adapter.barrier();
+adapter.allreduce_sum(sendbuf, recvbuf, count);
+
+// Template convenience methods
+double global_sum = adapter.allreduce_sum_value(local_value);
+int global_min = adapter.allreduce_min_value(local_int);
+```
+
+The adapter throws `nccl::communication_error` on failure (matching the MPI adapter pattern).
+
+## Architecture
+
+### Two-Layer Design
+
+The NCCL backend follows the same two-layer architecture as MPI:
+
+- **Layer 1** (`nccl_communicator`): Returns `result<T>` for error handling. Standalone
+  class (no `communicator_base` inheritance). Methods use `void*` + `elem_size` for
+  byte-level operations.
+
+- **Layer 2** (`nccl_comm_adapter`): Wraps Layer 1, throws on error, and satisfies the
+  `Communicator`/`CollectiveCommunicator`/`ReducingCommunicator` concepts via `static_assert`.
+
+### Design Decisions
+
+- **No `communicator_base` inheritance**: Unlike an earlier design, `nccl_communicator`
+  is standalone (matching `mpi_communicator`). The base class only defines 3 virtual
+  methods, while NCCL needs many more — inheritance caused invalid `override` errors.
+
+- **No `ParallelExecutor`/`BulkExecutor`**: CUDA execution is handled by the CUDA
+  backend's executor and Thrust-wrapped algorithms, not by NCCL.
+
+- **CUDA events for async**: Non-blocking operations (`isend`/`irecv`) use CUDA events
+  rather than MPI requests, with `wait_event()`/`test_event()` for completion.
+
 ## Limitations
+
+### Unsupported Operations (NCCL does not provide these)
+
+| Feature | Notes |
+|---|---|
+| Message tags | NCCL send/recv ignores tags; tag parameter accepted but unused |
+| `probe`/`iprobe` | No message probing in NCCL |
+| `ssend`/`rsend`/`issend`/`irsend` | No send mode variants |
+| Logical reductions (`land`/`lor`) | No NCCL logical ops |
+| Bitwise reductions (`band`/`bor`/`bxor`) | No NCCL bitwise ops |
+| Scan/exscan (`scan_sum`/`exscan_sum`) | No NCCL scan; use local GPU scan from `cuda_algorithms.hpp` |
+| RMA (one-sided) | Not available in NCCL |
+| Communicator splitting | Not available (use MPI split + new NCCL comm) |
+
+### Other Limitations
 
 - **MPI Required**: NCCL domain creation requires MPI for unique ID broadcast
 - **Single Communicator**: Currently creates one communicator matching MPI_COMM_WORLD
-- **No Direct P2P**: Use NCCL collectives; point-to-point returns `not_supported`
+- **GPU Memory Only**: All buffers must reside in CUDA device memory
 
 ## See Also
 

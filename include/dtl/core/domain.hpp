@@ -271,9 +271,10 @@ public:
 
 #if DTL_ENABLE_NCCL
 
-// Forward declaration
+// Forward declarations
 namespace nccl {
 class nccl_communicator;
+class nccl_comm_adapter;
 }
 
 /// @brief NCCL communication domain
@@ -311,6 +312,12 @@ public:
         return *comm_;
     }
 
+    /// @brief Get the concept-compliant adapter
+    [[nodiscard]] nccl::nccl_comm_adapter& adapter() noexcept;
+
+    /// @brief Get the concept-compliant adapter (const)
+    [[nodiscard]] const nccl::nccl_comm_adapter& adapter() const noexcept;
+
     /// @brief Factory: create NCCL domain from MPI domain
     /// @param mpi MPI domain to derive rank/size from
     /// @param device_id CUDA device ID for this rank
@@ -319,6 +326,7 @@ public:
 
 private:
     std::shared_ptr<nccl::nccl_communicator> comm_;
+    std::shared_ptr<nccl::nccl_comm_adapter> adapter_;
     rank_t rank_{0};
     rank_t size_{1};
 };

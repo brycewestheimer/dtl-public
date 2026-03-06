@@ -454,6 +454,11 @@ target_sources(dtl_unit_tests PRIVATE
     unit/backend/test_shmem_p2p.cpp
 )
 
+# NCCL Comm Adapter (concept-compliant Layer 2)
+target_sources(dtl_unit_tests PRIVATE
+    unit/backend/test_nccl_comm_adapter.cpp
+)
+
 # Phase 25: Experimental Backend Completion (V1.7.0)
 target_sources(dtl_unit_tests PRIVATE
     unit/backend/test_shared_region_posix.cpp

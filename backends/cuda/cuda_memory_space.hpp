@@ -24,6 +24,7 @@
 
 #include <atomic>
 #include <memory>
+#include <type_traits>
 
 namespace dtl {
 namespace cuda {
@@ -270,6 +271,51 @@ public:
     }
 
     // ------------------------------------------------------------------------
+    // TypedMemorySpace Interface
+    // ------------------------------------------------------------------------
+
+    /// @brief Allocate typed device memory
+    /// @tparam T Element type (must be trivially constructible for GPU)
+    /// @param count Number of elements
+    /// @return Pointer to allocated memory or nullptr on failure
+    template <typename T>
+    [[nodiscard]] T* allocate_typed(size_type count) {
+        void* ptr = allocate(count * sizeof(T));
+        return static_cast<T*>(ptr);
+    }
+
+    /// @brief Deallocate typed device memory
+    /// @tparam T Element type
+    /// @param ptr Pointer to deallocate
+    /// @param count Number of elements
+    template <typename T>
+    void deallocate_typed(T* ptr, size_type count) noexcept {
+        deallocate(static_cast<void*>(ptr), count * sizeof(T));
+    }
+
+    /// @brief Construct an object in device memory (no-op for trivial types)
+    /// @tparam T Element type (must be trivially constructible)
+    /// @param ptr Pointer to device memory
+    template <typename T>
+    void construct(T* ptr) {
+        static_assert(std::is_trivially_constructible_v<T>,
+                      "CUDA device memory only supports trivially constructible types");
+        (void)ptr;
+        // No-op: trivially constructible types need no initialization on GPU
+    }
+
+    /// @brief Destroy an object in device memory (no-op for trivial types)
+    /// @tparam T Element type (must be trivially destructible)
+    /// @param ptr Pointer to device memory
+    template <typename T>
+    void destroy(T* ptr) {
+        static_assert(std::is_trivially_destructible_v<T>,
+                      "CUDA device memory only supports trivially destructible types");
+        (void)ptr;
+        // No-op: trivially destructible types need no destruction on GPU
+    }
+
+    // ------------------------------------------------------------------------
     // CUDA-Specific Methods
     // ------------------------------------------------------------------------
 
@@ -328,6 +374,12 @@ private:
 
 static_assert(MemorySpace<cuda_memory_space>,
               "cuda_memory_space must satisfy MemorySpace concept");
+static_assert(TypedMemorySpace<cuda_memory_space, float>,
+              "cuda_memory_space must satisfy TypedMemorySpace<float> concept");
+static_assert(TypedMemorySpace<cuda_memory_space, double>,
+              "cuda_memory_space must satisfy TypedMemorySpace<double> concept");
+static_assert(TypedMemorySpace<cuda_memory_space, int>,
+              "cuda_memory_space must satisfy TypedMemorySpace<int> concept");
 
 // ============================================================================
 // Factory Functions

@@ -12,7 +12,6 @@
 #include <dtl/core/config.hpp>
 #include <dtl/core/types.hpp>
 #include <dtl/error/result.hpp>
-#include <dtl/communication/communicator_base.hpp>
 #include <dtl/communication/reduction_ops.hpp>
 #include <dtl/backend/concepts/communicator.hpp>
 
@@ -63,8 +62,9 @@ enum class nccl_op {
 /// @brief NCCL-based communicator for GPU collective operations
 /// @details Wraps NCCL communicator handle and provides DTL interface
 ///          for high-performance multi-GPU collective communication.
-class nccl_communicator : public communicator_base {
+class nccl_communicator {
 public:
+    using size_type = dtl::size_type;
     /// @brief Default constructor
     nccl_communicator() = default;
 
@@ -91,7 +91,7 @@ public:
 #endif
 
     /// @brief Destructor - frees barrier scratch buffer
-    ~nccl_communicator() override {
+    ~nccl_communicator() {
 #if defined(DTL_ENABLE_NCCL) && defined(DTL_ENABLE_CUDA)
         if (barrier_scratch_) {
             cudaFree(barrier_scratch_);
@@ -144,10 +144,10 @@ public:
     // Communicator Interface
     // ------------------------------------------------------------------------
 
-    [[nodiscard]] rank_t rank() const noexcept override { return rank_; }
-    [[nodiscard]] rank_t size() const noexcept override { return size_; }
+    [[nodiscard]] rank_t rank() const noexcept { return rank_; }
+    [[nodiscard]] rank_t size() const noexcept { return size_; }
 
-    [[nodiscard]] communicator_properties properties() const noexcept override {
+    [[nodiscard]] communicator_properties properties() const noexcept {
         return communicator_properties{
             .size = size_,
             .rank = rank_,
@@ -157,7 +157,7 @@ public:
         };
     }
 
-    [[nodiscard]] bool valid() const noexcept override {
+    [[nodiscard]] bool valid() const noexcept {
 #if DTL_ENABLE_NCCL
         return comm_ != nullptr;
 #else
@@ -173,7 +173,7 @@ public:
     /// @details NCCL does not support message tags; the tag parameter is ignored.
     ///          Data must reside in GPU memory.
     result<void> send_impl(const void* data, size_type count,
-                          size_type elem_size, rank_t dest, int tag) override {
+                          size_type elem_size, rank_t dest, int tag) {
         (void)tag;  // NCCL does not support message tags
 #if defined(DTL_ENABLE_NCCL) && defined(DTL_ENABLE_CUDA)
         if (!valid()) {
@@ -220,7 +220,7 @@ public:
     /// @details NCCL does not support message tags; the tag parameter is ignored.
     ///          Data must reside in GPU memory.
     result<void> recv_impl(void* data, size_type count,
-                          size_type elem_size, rank_t source, int tag) override {
+                          size_type elem_size, rank_t source, int tag) {
         (void)tag;  // NCCL does not support message tags
 #if defined(DTL_ENABLE_NCCL) && defined(DTL_ENABLE_CUDA)
         if (!valid()) {
@@ -436,7 +436,7 @@ public:
     // Collective Communication
     // ------------------------------------------------------------------------
 
-    result<void> barrier() override {
+    result<void> barrier() {
         // NCCL doesn't have barrier - use allreduce on single int
 #if defined(DTL_ENABLE_NCCL) && defined(DTL_ENABLE_CUDA)
         if (!barrier_scratch_) {
@@ -463,7 +463,7 @@ public:
     }
 
     result<void> broadcast_impl(void* data, size_type count,
-                               size_type elem_size, rank_t root) override {
+                               size_type elem_size, rank_t root) {
 #if defined(DTL_ENABLE_NCCL)
         ncclResult_t result = ncclBroadcast(data, data, count * elem_size,
                                             ncclChar, root, comm_, stream_);
@@ -481,7 +481,7 @@ public:
 
     result<void> gather_impl(const void* send_data, size_type send_count,
                             void* recv_data, size_type recv_count,
-                            size_type elem_size, rank_t root) override {
+                            size_type elem_size, rank_t root) {
 #if defined(DTL_ENABLE_NCCL) && defined(DTL_ENABLE_CUDA)
         // Use ncclSend/ncclRecv within group ops (NCCL 2.7+)
         size_type send_bytes = send_count * elem_size;
@@ -531,7 +531,7 @@ public:
 
     result<void> scatter_impl(const void* send_data, size_type send_count,
                              void* recv_data, size_type recv_count,
-                             size_type elem_size, rank_t root) override {
+                             size_type elem_size, rank_t root) {
 #if defined(DTL_ENABLE_NCCL) && defined(DTL_ENABLE_CUDA)
         // Use ncclSend/ncclRecv within group ops (NCCL 2.7+)
         size_type recv_bytes = recv_count * elem_size;
@@ -581,7 +581,7 @@ public:
 
     result<void> allgather_impl(const void* send_data, size_type send_count,
                                void* recv_data, size_type recv_count,
-                               size_type elem_size) override {
+                               size_type elem_size) {
 #if defined(DTL_ENABLE_NCCL)
         ncclResult_t result = ncclAllGather(send_data, recv_data,
                                             send_count * elem_size,
@@ -679,6 +679,487 @@ public:
         return {};
 #else
         (void)send_data; (void)recv_data; (void)recv_count; (void)elem_size;
+        return make_error<void>(status_code::not_supported,
+                               "NCCL support not enabled");
+#endif
+    }
+
+    // ------------------------------------------------------------------------
+    // Void-Pointer Reductions (Layer 1 — used by nccl_comm_adapter)
+    // ------------------------------------------------------------------------
+
+    /// @brief Reduce with sum to root (double)
+    result<void> reduce_sum_impl(const void* sendbuf, void* recvbuf,
+                                  size_type count, rank_t root) {
+#if defined(DTL_ENABLE_NCCL)
+        ncclResult_t res = ncclReduce(sendbuf, recvbuf, count,
+                                       ncclFloat64, ncclSum, root, comm_, stream_);
+        if (res != ncclSuccess) {
+            return make_error<void>(status_code::reduce_failed,
+                                   "ncclReduce (sum, double) failed");
+        }
+        return {};
+#else
+        (void)sendbuf; (void)recvbuf; (void)count; (void)root;
+        return make_error<void>(status_code::not_supported,
+                               "NCCL support not enabled");
+#endif
+    }
+
+    /// @brief Reduce with sum to root (int)
+    result<void> reduce_sum_int_impl(const void* sendbuf, void* recvbuf,
+                                      size_type count, rank_t root) {
+#if defined(DTL_ENABLE_NCCL)
+        ncclResult_t res = ncclReduce(sendbuf, recvbuf, count,
+                                       ncclInt32, ncclSum, root, comm_, stream_);
+        if (res != ncclSuccess) {
+            return make_error<void>(status_code::reduce_failed,
+                                   "ncclReduce (sum, int) failed");
+        }
+        return {};
+#else
+        (void)sendbuf; (void)recvbuf; (void)count; (void)root;
+        return make_error<void>(status_code::not_supported,
+                               "NCCL support not enabled");
+#endif
+    }
+
+    /// @brief Allreduce with sum (double)
+    result<void> allreduce_sum_impl(const void* sendbuf, void* recvbuf,
+                                     size_type count) {
+#if defined(DTL_ENABLE_NCCL)
+        ncclResult_t res = ncclAllReduce(sendbuf, recvbuf, count,
+                                          ncclFloat64, ncclSum, comm_, stream_);
+        if (res != ncclSuccess) {
+            return make_error<void>(status_code::reduce_failed,
+                                   "ncclAllReduce (sum, double) failed");
+        }
+        return {};
+#else
+        (void)sendbuf; (void)recvbuf; (void)count;
+        return make_error<void>(status_code::not_supported,
+                               "NCCL support not enabled");
+#endif
+    }
+
+    /// @brief Allreduce with sum (int)
+    result<void> allreduce_sum_int_impl(const void* sendbuf, void* recvbuf,
+                                         size_type count) {
+#if defined(DTL_ENABLE_NCCL)
+        ncclResult_t res = ncclAllReduce(sendbuf, recvbuf, count,
+                                          ncclInt32, ncclSum, comm_, stream_);
+        if (res != ncclSuccess) {
+            return make_error<void>(status_code::reduce_failed,
+                                   "ncclAllReduce (sum, int) failed");
+        }
+        return {};
+#else
+        (void)sendbuf; (void)recvbuf; (void)count;
+        return make_error<void>(status_code::not_supported,
+                               "NCCL support not enabled");
+#endif
+    }
+
+    /// @brief Allreduce with sum (long / int64)
+    result<void> allreduce_sum_long_impl(const void* sendbuf, void* recvbuf,
+                                          size_type count) {
+#if defined(DTL_ENABLE_NCCL)
+        ncclResult_t res = ncclAllReduce(sendbuf, recvbuf, count,
+                                          ncclInt64, ncclSum, comm_, stream_);
+        if (res != ncclSuccess) {
+            return make_error<void>(status_code::reduce_failed,
+                                   "ncclAllReduce (sum, long) failed");
+        }
+        return {};
+#else
+        (void)sendbuf; (void)recvbuf; (void)count;
+        return make_error<void>(status_code::not_supported,
+                               "NCCL support not enabled");
+#endif
+    }
+
+    // ------------------------------------------------------------------------
+    // Extended Typed Reductions (min, max, prod)
+    // ------------------------------------------------------------------------
+
+    /// @brief Allreduce with min (double)
+    result<void> allreduce_min_impl(const void* sendbuf, void* recvbuf,
+                                     size_type count) {
+#if defined(DTL_ENABLE_NCCL)
+        ncclResult_t res = ncclAllReduce(sendbuf, recvbuf, count,
+                                          ncclFloat64, ncclMin, comm_, stream_);
+        if (res != ncclSuccess) {
+            return make_error<void>(status_code::reduce_failed,
+                                   "ncclAllReduce (min, double) failed");
+        }
+        return {};
+#else
+        (void)sendbuf; (void)recvbuf; (void)count;
+        return make_error<void>(status_code::not_supported,
+                               "NCCL support not enabled");
+#endif
+    }
+
+    /// @brief Allreduce with min (int)
+    result<void> allreduce_min_int_impl(const void* sendbuf, void* recvbuf,
+                                         size_type count) {
+#if defined(DTL_ENABLE_NCCL)
+        ncclResult_t res = ncclAllReduce(sendbuf, recvbuf, count,
+                                          ncclInt32, ncclMin, comm_, stream_);
+        if (res != ncclSuccess) {
+            return make_error<void>(status_code::reduce_failed,
+                                   "ncclAllReduce (min, int) failed");
+        }
+        return {};
+#else
+        (void)sendbuf; (void)recvbuf; (void)count;
+        return make_error<void>(status_code::not_supported,
+                               "NCCL support not enabled");
+#endif
+    }
+
+    /// @brief Allreduce with min (long / int64)
+    result<void> allreduce_min_long_impl(const void* sendbuf, void* recvbuf,
+                                          size_type count) {
+#if defined(DTL_ENABLE_NCCL)
+        ncclResult_t res = ncclAllReduce(sendbuf, recvbuf, count,
+                                          ncclInt64, ncclMin, comm_, stream_);
+        if (res != ncclSuccess) {
+            return make_error<void>(status_code::reduce_failed,
+                                   "ncclAllReduce (min, long) failed");
+        }
+        return {};
+#else
+        (void)sendbuf; (void)recvbuf; (void)count;
+        return make_error<void>(status_code::not_supported,
+                               "NCCL support not enabled");
+#endif
+    }
+
+    /// @brief Allreduce with max (double)
+    result<void> allreduce_max_impl(const void* sendbuf, void* recvbuf,
+                                     size_type count) {
+#if defined(DTL_ENABLE_NCCL)
+        ncclResult_t res = ncclAllReduce(sendbuf, recvbuf, count,
+                                          ncclFloat64, ncclMax, comm_, stream_);
+        if (res != ncclSuccess) {
+            return make_error<void>(status_code::reduce_failed,
+                                   "ncclAllReduce (max, double) failed");
+        }
+        return {};
+#else
+        (void)sendbuf; (void)recvbuf; (void)count;
+        return make_error<void>(status_code::not_supported,
+                               "NCCL support not enabled");
+#endif
+    }
+
+    /// @brief Allreduce with max (int)
+    result<void> allreduce_max_int_impl(const void* sendbuf, void* recvbuf,
+                                         size_type count) {
+#if defined(DTL_ENABLE_NCCL)
+        ncclResult_t res = ncclAllReduce(sendbuf, recvbuf, count,
+                                          ncclInt32, ncclMax, comm_, stream_);
+        if (res != ncclSuccess) {
+            return make_error<void>(status_code::reduce_failed,
+                                   "ncclAllReduce (max, int) failed");
+        }
+        return {};
+#else
+        (void)sendbuf; (void)recvbuf; (void)count;
+        return make_error<void>(status_code::not_supported,
+                               "NCCL support not enabled");
+#endif
+    }
+
+    /// @brief Allreduce with max (long / int64)
+    result<void> allreduce_max_long_impl(const void* sendbuf, void* recvbuf,
+                                          size_type count) {
+#if defined(DTL_ENABLE_NCCL)
+        ncclResult_t res = ncclAllReduce(sendbuf, recvbuf, count,
+                                          ncclInt64, ncclMax, comm_, stream_);
+        if (res != ncclSuccess) {
+            return make_error<void>(status_code::reduce_failed,
+                                   "ncclAllReduce (max, long) failed");
+        }
+        return {};
+#else
+        (void)sendbuf; (void)recvbuf; (void)count;
+        return make_error<void>(status_code::not_supported,
+                               "NCCL support not enabled");
+#endif
+    }
+
+    /// @brief Allreduce with product (double)
+    result<void> allreduce_prod_impl(const void* sendbuf, void* recvbuf,
+                                      size_type count) {
+#if defined(DTL_ENABLE_NCCL)
+        ncclResult_t res = ncclAllReduce(sendbuf, recvbuf, count,
+                                          ncclFloat64, ncclProd, comm_, stream_);
+        if (res != ncclSuccess) {
+            return make_error<void>(status_code::reduce_failed,
+                                   "ncclAllReduce (prod, double) failed");
+        }
+        return {};
+#else
+        (void)sendbuf; (void)recvbuf; (void)count;
+        return make_error<void>(status_code::not_supported,
+                               "NCCL support not enabled");
+#endif
+    }
+
+    /// @brief Allreduce with product (int)
+    result<void> allreduce_prod_int_impl(const void* sendbuf, void* recvbuf,
+                                          size_type count) {
+#if defined(DTL_ENABLE_NCCL)
+        ncclResult_t res = ncclAllReduce(sendbuf, recvbuf, count,
+                                          ncclInt32, ncclProd, comm_, stream_);
+        if (res != ncclSuccess) {
+            return make_error<void>(status_code::reduce_failed,
+                                   "ncclAllReduce (prod, int) failed");
+        }
+        return {};
+#else
+        (void)sendbuf; (void)recvbuf; (void)count;
+        return make_error<void>(status_code::not_supported,
+                               "NCCL support not enabled");
+#endif
+    }
+
+    /// @brief Allreduce with product (long / int64)
+    result<void> allreduce_prod_long_impl(const void* sendbuf, void* recvbuf,
+                                           size_type count) {
+#if defined(DTL_ENABLE_NCCL)
+        ncclResult_t res = ncclAllReduce(sendbuf, recvbuf, count,
+                                          ncclInt64, ncclProd, comm_, stream_);
+        if (res != ncclSuccess) {
+            return make_error<void>(status_code::reduce_failed,
+                                   "ncclAllReduce (prod, long) failed");
+        }
+        return {};
+#else
+        (void)sendbuf; (void)recvbuf; (void)count;
+        return make_error<void>(status_code::not_supported,
+                               "NCCL support not enabled");
+#endif
+    }
+
+    // ------------------------------------------------------------------------
+    // Variable-Size Collectives (gatherv, scatterv, allgatherv, alltoallv)
+    // ------------------------------------------------------------------------
+
+    /// @brief Variable-size gather using grouped ncclSend/ncclRecv
+    result<void> gatherv_impl(const void* sendbuf, size_type sendcount,
+                               void* recvbuf, const int* recvcounts,
+                               const int* displs, size_type elem_size, rank_t root) {
+#if defined(DTL_ENABLE_NCCL) && defined(DTL_ENABLE_CUDA)
+        if (!valid()) {
+            return make_error<void>(status_code::invalid_state,
+                                   "NCCL communicator is not initialized");
+        }
+        size_type send_bytes = sendcount * elem_size;
+        ncclResult_t nccl_res = ncclGroupStart();
+        if (nccl_res != ncclSuccess) {
+            return make_error<void>(status_code::collective_failure,
+                                   "ncclGroupStart failed in gatherv");
+        }
+        nccl_res = ncclSend(sendbuf, send_bytes, ncclChar, root, comm_, stream_);
+        if (nccl_res != ncclSuccess) {
+            ncclGroupEnd();
+            return make_error<void>(status_code::collective_failure,
+                                   "ncclSend in gatherv failed");
+        }
+        if (rank_ == root) {
+            for (rank_t r = 0; r < size_; ++r) {
+                size_type recv_bytes = static_cast<size_type>(recvcounts[r]) * elem_size;
+                void* recv_ptr = static_cast<char*>(recvbuf) +
+                                 static_cast<size_type>(displs[r]) * elem_size;
+                nccl_res = ncclRecv(recv_ptr, recv_bytes, ncclChar, r, comm_, stream_);
+                if (nccl_res != ncclSuccess) {
+                    ncclGroupEnd();
+                    return make_error<void>(status_code::collective_failure,
+                                           "ncclRecv in gatherv failed");
+                }
+            }
+        }
+        nccl_res = ncclGroupEnd();
+        if (nccl_res != ncclSuccess) {
+            return make_error<void>(status_code::collective_failure,
+                                   "ncclGroupEnd failed in gatherv");
+        }
+        return {};
+#else
+        (void)sendbuf; (void)sendcount; (void)recvbuf;
+        (void)recvcounts; (void)displs; (void)elem_size; (void)root;
+        return make_error<void>(status_code::not_supported,
+                               "NCCL/CUDA support not enabled");
+#endif
+    }
+
+    /// @brief Variable-size scatter using grouped ncclSend/ncclRecv
+    result<void> scatterv_impl(const void* sendbuf, const int* sendcounts,
+                                const int* displs, void* recvbuf,
+                                size_type recvcount, size_type elem_size, rank_t root) {
+#if defined(DTL_ENABLE_NCCL) && defined(DTL_ENABLE_CUDA)
+        if (!valid()) {
+            return make_error<void>(status_code::invalid_state,
+                                   "NCCL communicator is not initialized");
+        }
+        size_type recv_bytes = recvcount * elem_size;
+        ncclResult_t nccl_res = ncclGroupStart();
+        if (nccl_res != ncclSuccess) {
+            return make_error<void>(status_code::collective_failure,
+                                   "ncclGroupStart failed in scatterv");
+        }
+        if (rank_ == root) {
+            for (rank_t r = 0; r < size_; ++r) {
+                size_type send_bytes = static_cast<size_type>(sendcounts[r]) * elem_size;
+                const void* send_ptr = static_cast<const char*>(sendbuf) +
+                                       static_cast<size_type>(displs[r]) * elem_size;
+                nccl_res = ncclSend(send_ptr, send_bytes, ncclChar, r, comm_, stream_);
+                if (nccl_res != ncclSuccess) {
+                    ncclGroupEnd();
+                    return make_error<void>(status_code::collective_failure,
+                                           "ncclSend in scatterv failed");
+                }
+            }
+        }
+        nccl_res = ncclRecv(recvbuf, recv_bytes, ncclChar, root, comm_, stream_);
+        if (nccl_res != ncclSuccess) {
+            ncclGroupEnd();
+            return make_error<void>(status_code::collective_failure,
+                                   "ncclRecv in scatterv failed");
+        }
+        nccl_res = ncclGroupEnd();
+        if (nccl_res != ncclSuccess) {
+            return make_error<void>(status_code::collective_failure,
+                                   "ncclGroupEnd failed in scatterv");
+        }
+        return {};
+#else
+        (void)sendbuf; (void)sendcounts; (void)displs;
+        (void)recvbuf; (void)recvcount; (void)elem_size; (void)root;
+        return make_error<void>(status_code::not_supported,
+                               "NCCL/CUDA support not enabled");
+#endif
+    }
+
+    /// @brief Variable-size allgather using grouped ncclSend/ncclRecv
+    result<void> allgatherv_impl(const void* sendbuf, size_type sendcount,
+                                  void* recvbuf, const int* recvcounts,
+                                  const int* displs, size_type elem_size) {
+#if defined(DTL_ENABLE_NCCL) && defined(DTL_ENABLE_CUDA)
+        if (!valid()) {
+            return make_error<void>(status_code::invalid_state,
+                                   "NCCL communicator is not initialized");
+        }
+        size_type send_bytes = sendcount * elem_size;
+        ncclResult_t nccl_res = ncclGroupStart();
+        if (nccl_res != ncclSuccess) {
+            return make_error<void>(status_code::collective_failure,
+                                   "ncclGroupStart failed in allgatherv");
+        }
+        // Send our data to all ranks
+        for (rank_t r = 0; r < size_; ++r) {
+            nccl_res = ncclSend(sendbuf, send_bytes, ncclChar, r, comm_, stream_);
+            if (nccl_res != ncclSuccess) {
+                ncclGroupEnd();
+                return make_error<void>(status_code::collective_failure,
+                                       "ncclSend in allgatherv failed");
+            }
+        }
+        // Receive from all ranks
+        for (rank_t r = 0; r < size_; ++r) {
+            size_type recv_bytes = static_cast<size_type>(recvcounts[r]) * elem_size;
+            void* recv_ptr = static_cast<char*>(recvbuf) +
+                             static_cast<size_type>(displs[r]) * elem_size;
+            nccl_res = ncclRecv(recv_ptr, recv_bytes, ncclChar, r, comm_, stream_);
+            if (nccl_res != ncclSuccess) {
+                ncclGroupEnd();
+                return make_error<void>(status_code::collective_failure,
+                                       "ncclRecv in allgatherv failed");
+            }
+        }
+        nccl_res = ncclGroupEnd();
+        if (nccl_res != ncclSuccess) {
+            return make_error<void>(status_code::collective_failure,
+                                   "ncclGroupEnd failed in allgatherv");
+        }
+        return {};
+#else
+        (void)sendbuf; (void)sendcount; (void)recvbuf;
+        (void)recvcounts; (void)displs; (void)elem_size;
+        return make_error<void>(status_code::not_supported,
+                               "NCCL/CUDA support not enabled");
+#endif
+    }
+
+    /// @brief Variable-size all-to-all using grouped ncclSend/ncclRecv
+    result<void> alltoallv_impl(const void* sendbuf, const int* sendcounts,
+                                 const int* sdispls, void* recvbuf,
+                                 const int* recvcounts, const int* rdispls,
+                                 size_type elem_size) {
+#if defined(DTL_ENABLE_NCCL) && defined(DTL_ENABLE_CUDA)
+        if (!valid()) {
+            return make_error<void>(status_code::invalid_state,
+                                   "NCCL communicator is not initialized");
+        }
+        ncclResult_t nccl_res = ncclGroupStart();
+        if (nccl_res != ncclSuccess) {
+            return make_error<void>(status_code::collective_failure,
+                                   "ncclGroupStart failed in alltoallv");
+        }
+        for (rank_t r = 0; r < size_; ++r) {
+            size_type send_bytes = static_cast<size_type>(sendcounts[r]) * elem_size;
+            const void* send_ptr = static_cast<const char*>(sendbuf) +
+                                   static_cast<size_type>(sdispls[r]) * elem_size;
+            nccl_res = ncclSend(send_ptr, send_bytes, ncclChar, r, comm_, stream_);
+            if (nccl_res != ncclSuccess) {
+                ncclGroupEnd();
+                return make_error<void>(status_code::collective_failure,
+                                       "ncclSend in alltoallv failed");
+            }
+            size_type recv_bytes = static_cast<size_type>(recvcounts[r]) * elem_size;
+            void* recv_ptr = static_cast<char*>(recvbuf) +
+                             static_cast<size_type>(rdispls[r]) * elem_size;
+            nccl_res = ncclRecv(recv_ptr, recv_bytes, ncclChar, r, comm_, stream_);
+            if (nccl_res != ncclSuccess) {
+                ncclGroupEnd();
+                return make_error<void>(status_code::collective_failure,
+                                       "ncclRecv in alltoallv failed");
+            }
+        }
+        nccl_res = ncclGroupEnd();
+        if (nccl_res != ncclSuccess) {
+            return make_error<void>(status_code::collective_failure,
+                                   "ncclGroupEnd failed in alltoallv");
+        }
+        return {};
+#else
+        (void)sendbuf; (void)sendcounts; (void)sdispls;
+        (void)recvbuf; (void)recvcounts; (void)rdispls; (void)elem_size;
+        return make_error<void>(status_code::not_supported,
+                               "NCCL/CUDA support not enabled");
+#endif
+    }
+
+    // ------------------------------------------------------------------------
+    // Typed Broadcast
+    // ------------------------------------------------------------------------
+
+    /// @brief Typed broadcast using proper NCCL data type
+    template <typename T>
+    result<void> broadcast(T* data, size_type count, rank_t root) {
+#if defined(DTL_ENABLE_NCCL)
+        ncclDataType_t dtype = get_nccl_dtype<T>();
+        ncclResult_t res = ncclBroadcast(data, data, count, dtype, root, comm_, stream_);
+        if (res != ncclSuccess) {
+            return make_error<void>(status_code::collective_failure,
+                                   "ncclBroadcast (typed) failed");
+        }
+        return {};
+#else
+        (void)data; (void)count; (void)root;
         return make_error<void>(status_code::not_supported,
                                "NCCL support not enabled");
 #endif
