@@ -1,7 +1,7 @@
 # Python API Reference
 
 **DTL Version:** 0.1.0-alpha.1
-**Last Updated:** 2026-03-03
+**Last Updated:** 2026-03-06
 
 The Python package exposes the alpha binding surface from
 `bindings/python/src/dtl/__init__.py` and `bindings/python/src/dtl/__init__.pyi`.
@@ -71,8 +71,27 @@ Context factories:
 ctx.dup()                 # collective duplicate
 ctx.split(color=0, key=0) # collective split
 ctx.with_cuda(0)
-ctx.with_nccl(0)
+ctx.with_nccl(0)  # default: DTL_NCCL_MODE_HYBRID_PARITY
+ctx.with_nccl(0, mode=dtl.DTL_NCCL_MODE_NATIVE_ONLY)
+ctx.split_nccl(color=0, key=0, device_id=0,
+               mode=dtl.DTL_NCCL_MODE_HYBRID_PARITY)
 ```
+
+NCCL mode/capability queries:
+
+```python
+ctx.nccl_mode
+ctx.nccl_supports_native(dtl.DTL_NCCL_OP_ALLREDUCE)
+ctx.nccl_supports_hybrid(dtl.DTL_NCCL_OP_SCAN)
+```
+
+### NCCL Binding Scope (Python)
+
+- Python bindings expose NCCL mode-aware context/domain controls and capability
+  introspection.
+- Explicit C ABI device-collective entry points (`dtl_nccl_*_device(_ex)`) are
+  currently exposed directly in C and Fortran; Python uses the generic
+  collective API surface on top of context/domain selection.
 
 ## Containers
 

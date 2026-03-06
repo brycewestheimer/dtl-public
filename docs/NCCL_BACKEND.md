@@ -65,6 +65,11 @@ NCCL communicators are bootstrapped via MPI:
   - hybrid parity families via `_ex`:
     `gatherv/scatterv/allgatherv/alltoallv/scan/exscan`
 
+## Examples
+
+- C mode-aware context demo: `examples/c/nccl_modes.c`
+- Python mode-aware context demo: `examples/python/scripts/nccl_modes.py`
+
 ## Rank-to-Device Mapping
 
 Each MPI rank maps to exactly one GPU. The device ID is set explicitly via context construction. Multi-GPU-per-rank is not currently supported.

@@ -35,6 +35,15 @@ Feature support across language bindings.
 | Scan/Exscan | Unsupported (native) | Hybrid parity (`*_device_ex`) | Unsupported | Partial (C interface) |
 | Variable-size collectives | Unsupported (native) | Hybrid parity (`*_device_ex`) | Unsupported | Partial (C interface) |
 
+## NCCL Context/Mode Controls
+
+| Feature | C++ | C | Python | Fortran |
+|---|---|---|---|---|
+| `with_nccl(..., mode)` | Supported | Supported (`dtl_context_with_nccl_ex`) | Supported | Supported (`dtl_context_with_nccl_ex`) |
+| `split_nccl(..., mode)` | Supported | Supported (`dtl_context_split_nccl_ex`) | Supported | Supported (`dtl_context_split_nccl_ex`) |
+| Mode query (`nccl_mode`) | Supported | Supported | Supported | Supported |
+| Capability queries (`supports_native/hybrid`) | Supported | Supported | Supported | Supported |
+
 ## CUDA Container Operations
 
 | Operation | C++ Device | C++ Unified | C Device | C Unified |

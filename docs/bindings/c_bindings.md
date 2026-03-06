@@ -211,6 +211,31 @@ dtl_rank_t dtl_context_size(dtl_context_t ctx);  // Total ranks
 dtl_status dtl_context_barrier(dtl_context_t ctx);
 ```
 
+#### Mode-Aware CUDA/NCCL Context APIs
+
+```c
+// Add CUDA/NCCL domains
+dtl_status dtl_context_with_cuda(dtl_context_t ctx, int device_id, dtl_context_t* out);
+dtl_status dtl_context_with_nccl(dtl_context_t ctx, int device_id, dtl_context_t* out);
+dtl_status dtl_context_with_nccl_ex(
+    dtl_context_t ctx, int device_id, dtl_nccl_operation_mode mode, dtl_context_t* out);
+
+// Split with NCCL domain
+dtl_status dtl_context_split_nccl(dtl_context_t ctx, int color, int key, dtl_context_t* out);
+dtl_status dtl_context_split_nccl_ex(
+    dtl_context_t ctx, int color, int key, int device_id,
+    dtl_nccl_operation_mode mode, dtl_context_t* out);
+
+// NCCL mode/capability introspection
+int dtl_context_nccl_mode(dtl_context_t ctx);
+int dtl_context_nccl_supports_native(dtl_context_t ctx, dtl_nccl_operation op);
+int dtl_context_nccl_supports_hybrid(dtl_context_t ctx, dtl_nccl_operation op);
+```
+
+`DTL_NCCL_MODE_NATIVE_ONLY` rejects non-native NCCL operation families.
+`DTL_NCCL_MODE_HYBRID_PARITY` enables explicit hybrid parity paths where
+available.
+
 **Example:**
 
 ```c

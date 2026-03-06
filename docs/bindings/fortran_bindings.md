@@ -448,6 +448,32 @@ status = dtl_context_barrier(ctx)
 call dtl_context_destroy(ctx)
 ```
 
+### NCCL Mode-Aware Context APIs (Fortran via C Interop)
+
+When CUDA/NCCL are available, Fortran bindings expose mode-aware NCCL context
+composition and capability queries:
+
+```fortran
+integer(c_int) :: status, mode, can_native, can_hybrid
+type(c_ptr) :: base_ctx, nccl_ctx, split_ctx
+
+status = dtl_context_with_nccl_ex(base_ctx, 0_c_int, DTL_NCCL_MODE_NATIVE_ONLY, nccl_ctx)
+status = dtl_context_split_nccl_ex(nccl_ctx, 0_c_int, 0_c_int, 0_c_int, &
+                                   DTL_NCCL_MODE_HYBRID_PARITY, split_ctx)
+
+mode = dtl_context_nccl_mode(split_ctx)
+can_native = dtl_context_nccl_supports_native(split_ctx, DTL_NCCL_OP_ALLREDUCE)
+can_hybrid = dtl_context_nccl_supports_hybrid(split_ctx, DTL_NCCL_OP_SCAN)
+```
+
+Fortran also exposes explicit C-interoperable NCCL device collective procedures
+such as:
+
+- `dtl_nccl_allreduce_device(_ex)`
+- `dtl_nccl_broadcast_device(_ex)`
+- `dtl_nccl_scan_device_ex` / `dtl_nccl_exscan_device_ex`
+- variable-size parity families: `dtl_nccl_*v_device_ex`
+
 ---
 
 ## Container Operations

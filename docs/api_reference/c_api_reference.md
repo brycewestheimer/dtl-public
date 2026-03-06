@@ -1,7 +1,7 @@
 # C API Reference
 
 **DTL Version:** 0.1.0-alpha.1
-**Last Updated:** 2026-02-25
+**Last Updated:** 2026-03-06
 
 The DTL C bindings provide a C-compatible interface to DTL's core functionality. All functions use opaque handle types, `dtl_status` return codes, and callback-based algorithms.
 
@@ -100,6 +100,69 @@ Initialize options struct with defaults.
 ```c
 void dtl_context_options_init(dtl_context_options* opts);
 ```
+
+### Context Domain Composition (CUDA/NCCL)
+
+Mode-aware context composition APIs are available for CUDA/NCCL domains.
+
+```c
+// Duplicate or split communicator domains
+dtl_status dtl_context_dup(dtl_context_t ctx, dtl_context_t* out);
+dtl_status dtl_context_split(dtl_context_t ctx, int color, int key, dtl_context_t* out);
+
+// Add CUDA domain
+dtl_status dtl_context_with_cuda(dtl_context_t ctx, int device_id, dtl_context_t* out);
+
+// Add/split NCCL domain (default mode and explicit mode variants)
+dtl_status dtl_context_with_nccl(dtl_context_t ctx, int device_id, dtl_context_t* out);
+dtl_status dtl_context_with_nccl_ex(
+    dtl_context_t ctx, int device_id, dtl_nccl_operation_mode mode, dtl_context_t* out);
+dtl_status dtl_context_split_nccl(dtl_context_t ctx, int color, int key, dtl_context_t* out);
+dtl_status dtl_context_split_nccl_ex(
+    dtl_context_t ctx, int color, int key, int device_id,
+    dtl_nccl_operation_mode mode, dtl_context_t* out);
+
+// NCCL mode/capability introspection
+int dtl_context_nccl_mode(dtl_context_t ctx);
+int dtl_context_nccl_supports_native(dtl_context_t ctx, dtl_nccl_operation op);
+int dtl_context_nccl_supports_hybrid(dtl_context_t ctx, dtl_nccl_operation op);
+```
+
+NCCL mode values:
+
+- `DTL_NCCL_MODE_NATIVE_ONLY`: reject non-native NCCL operation families.
+- `DTL_NCCL_MODE_HYBRID_PARITY`: allow explicit hybrid MPI-assisted parity paths.
+
+### NCCL Device Collective APIs (Explicit Surface)
+
+The C ABI exposes explicit NCCL device-buffer collectives and mode-aware `_ex`
+variants for parity families.
+
+Header:
+
+```c
+#include <dtl/bindings/c/dtl_communicator.h>
+```
+
+```c
+// Native-device families (+ mode-aware variants)
+dtl_status dtl_nccl_allreduce_device(...);
+dtl_status dtl_nccl_allreduce_device_ex(..., dtl_nccl_operation_mode mode);
+dtl_status dtl_nccl_broadcast_device(...);
+dtl_status dtl_nccl_broadcast_device_ex(..., dtl_nccl_operation_mode mode);
+dtl_status dtl_nccl_barrier_device(dtl_context_t ctx);
+
+// Hybrid parity families (explicit _ex variants)
+dtl_status dtl_nccl_gatherv_device_ex(..., dtl_nccl_operation_mode mode);
+dtl_status dtl_nccl_scatterv_device_ex(..., dtl_nccl_operation_mode mode);
+dtl_status dtl_nccl_allgatherv_device_ex(..., dtl_nccl_operation_mode mode);
+dtl_status dtl_nccl_alltoallv_device_ex(..., dtl_nccl_operation_mode mode);
+dtl_status dtl_nccl_scan_device_ex(..., dtl_nccl_operation_mode mode);
+dtl_status dtl_nccl_exscan_device_ex(..., dtl_nccl_operation_mode mode);
+```
+
+All explicit NCCL collectives are device-buffer APIs. Passing host pointers is
+an error by contract.
 
 **Full example:**
 ```c

@@ -103,6 +103,11 @@ Important:
 - C/Python/Fortran bindings also expose `with_nccl` and `split_nccl` with
   explicit mode controls via `_ex`/mode-aware APIs.
 
+Example programs:
+
+- C: `examples/c/nccl_modes.c`
+- Python: `examples/python/scripts/nccl_modes.py`
+
 ## Communicator Layers
 
 ### `nccl_communicator`

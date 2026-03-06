@@ -171,18 +171,42 @@ ctx = dtl.Context(comm=MPI.COMM_WORLD)
 ### Properties
 
 ```python
-ctx.rank       # int: Current rank (0 to size-1)
-ctx.size       # int: Total number of ranks
-ctx.is_root    # bool: True if rank 0
-ctx.device_id  # int: GPU device ID (-1 for CPU only)
-ctx.has_device # bool: True if GPU enabled
+ctx.rank            # int: Current rank (0 to size-1)
+ctx.size            # int: Total number of ranks
+ctx.is_root         # bool: True if rank 0
+ctx.device_id       # int: GPU device ID (-1 for CPU only)
+ctx.has_device      # bool: True if GPU enabled
+ctx.has_mpi         # bool: MPI domain present
+ctx.has_cuda        # bool: CUDA domain present
+ctx.has_nccl        # bool: NCCL domain present
+ctx.nccl_mode       # int: DTL_NCCL_MODE_* (or -1 if no NCCL)
 ```
 
 ### Methods
 
 ```python
 ctx.barrier()  # Synchronize all ranks
+ctx.fence()    # Local memory fence
+ctx.dup()      # Duplicate context communicator
+ctx.split(color, key=0)
+ctx.with_cuda(device_id)
+ctx.with_nccl(device_id, mode=dtl.DTL_NCCL_MODE_HYBRID_PARITY)
+ctx.split_nccl(color, key=0, device_id=None, mode=dtl.DTL_NCCL_MODE_HYBRID_PARITY)
+ctx.nccl_supports_native(dtl.DTL_NCCL_OP_ALLREDUCE)
+ctx.nccl_supports_hybrid(dtl.DTL_NCCL_OP_SCAN)
 ```
+
+NCCL mode constants:
+
+```python
+dtl.DTL_NCCL_MODE_NATIVE_ONLY
+dtl.DTL_NCCL_MODE_HYBRID_PARITY
+```
+
+Note: explicit C ABI NCCL device-collective entry points (`dtl_nccl_*_device`
+and `*_device_ex`) are currently exposed directly in C/Fortran. Python
+currently uses the generic collective API surface plus explicit context/domain
+selection.
 
 ### Context Manager
 

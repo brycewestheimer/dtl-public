@@ -65,6 +65,17 @@ mpicc -I../../include -L../../build/src/bindings/c collective_ops.c -ldtl_c -o c
 mpirun -np 4 ./collective_ops
 ```
 
+### nccl_modes.c
+Mode-aware NCCL context composition and capability queries:
+- `DTL_NCCL_MODE_NATIVE_ONLY` vs `DTL_NCCL_MODE_HYBRID_PARITY`
+- `dtl_context_with_nccl_ex` / `dtl_context_split_nccl_ex`
+- native/hybrid capability checks per operation family
+
+```bash
+mpicc -I../../include -L../../build/src/bindings/c nccl_modes.c -ldtl_c -o nccl_modes
+mpirun -np 2 ./nccl_modes
+```
+
 ## API Summary
 
 ### Context Management
@@ -101,6 +112,17 @@ dtl_status dtl_barrier(dtl_context_t ctx);
 dtl_status dtl_broadcast(dtl_context_t ctx, void* data, dtl_size_t count, dtl_dtype dtype, dtl_rank_t root);
 dtl_status dtl_reduce(dtl_context_t ctx, const void* send, void* recv, dtl_size_t count, dtl_dtype dtype, dtl_reduce_op op, dtl_rank_t root);
 dtl_status dtl_allreduce(dtl_context_t ctx, const void* send, void* recv, dtl_size_t count, dtl_dtype dtype, dtl_reduce_op op);
+```
+
+### NCCL Context/Mode
+```c
+dtl_status dtl_context_with_nccl_ex(dtl_context_t ctx, int device_id,
+                                    dtl_nccl_operation_mode mode, dtl_context_t* out);
+dtl_status dtl_context_split_nccl_ex(dtl_context_t ctx, int color, int key,
+                                     int device_id, dtl_nccl_operation_mode mode,
+                                     dtl_context_t* out);
+int dtl_context_nccl_supports_native(dtl_context_t ctx, dtl_nccl_operation op);
+int dtl_context_nccl_supports_hybrid(dtl_context_t ctx, dtl_nccl_operation op);
 ```
 
 ## Error Handling

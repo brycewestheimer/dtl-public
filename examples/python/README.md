@@ -22,7 +22,8 @@ examples/python/
 ├── README.md              # This file
 ├── scripts/               # Standalone Python scripts
 │   ├── hello_dtl.py       # Basic DTL usage
-│   └── distributed_reduce.py  # Distributed reduction example
+│   ├── distributed_reduce.py  # Distributed reduction example
+│   └── nccl_modes.py      # NCCL native/hybrid mode demo
 └── notebooks/             # Jupyter notebooks
     ├── 01_getting_started.ipynb
     ├── 02_distributed_vectors.ipynb
@@ -43,6 +44,7 @@ python scripts/hello_dtl.py
 ```bash
 mpirun -np 4 python scripts/hello_dtl.py
 mpirun -np 4 python scripts/distributed_reduce.py
+mpirun -np 2 python scripts/nccl_modes.py
 ```
 
 ## Running Notebooks
@@ -99,6 +101,12 @@ Demonstrates distributed operations:
 - Computing local sums
 - Distributed reduction (requires MPI)
 
+### nccl_modes.py
+Demonstrates mode-aware NCCL context behavior:
+- `with_nccl(..., mode=...)` for native-only and hybrid parity modes
+- `split_nccl(..., mode=...)`
+- `nccl_supports_native` / `nccl_supports_hybrid` capability queries
+
 ### Notebooks
 
 1. **01_getting_started.ipynb**: Introduction to DTL concepts
@@ -125,6 +133,10 @@ Properties:
 
 Methods:
 - `barrier()`: Synchronize all ranks
+- `with_cuda(device_id)`: Add CUDA domain
+- `with_nccl(device_id, mode=...)`: Add NCCL domain with explicit mode
+- `split_nccl(color, key=0, device_id=None, mode=...)`: Split + NCCL domain
+- `nccl_supports_native(op)` / `nccl_supports_hybrid(op)`: Capability queries
 
 ### DistributedVector
 

@@ -1,6 +1,6 @@
 # DTL Bindings Coverage Matrix
 
-**Last Updated:** V1.3.1 Release
+**Last Updated:** 2026-03-06
 
 This document shows what C++ features are exposed in each language binding and what remains deferred.
 
@@ -29,7 +29,20 @@ This document shows what C++ features are exposed in each language binding and w
 | Environment state queries | Y | Y | `is_initialized()`, `ref_count()` |
 | Environment backend queries | Y | Y | `has_mpi()`, `has_cuda()`, etc. |
 | Environment context factories | Y | Y | `make_world_context()`, `make_cpu_context()` |
+| Context domain composition (`with_cuda`) | Y | Y | |
+| NCCL context composition (`with_nccl` / `split_nccl`) | Y | Y | Mode-aware in Python (`mode=`), C exposes `_ex` variants |
+| NCCL mode query (`nccl_mode`) | Y | Y | C: `dtl_context_nccl_mode`, Python: `Context.nccl_mode` |
+| NCCL capability query (`supports_native/hybrid`) | Y | Y | Operation-family capability checks |
 | Environment options | - | - | C++ only (`environment_options`) |
+
+## NCCL Mode-Aware Backend Surface
+
+| Feature | C ABI | Python | Notes |
+|---------|:-----:|:------:|-------|
+| Mode enum (`native_only`, `hybrid_parity`) | Y | Y | Python constants `DTL_NCCL_MODE_*` |
+| Native/hybrid capability introspection | Y | Y | `dtl_context_nccl_supports_*`, `Context.nccl_supports_*` |
+| Explicit NCCL device collectives (`*_device`, `*_device_ex`) | Y | - | Python currently uses generic collective API surface |
+| Hybrid parity families (`*_device_ex` for scan/var-size) | Y | - | Explicit in C ABI |
 
 ## Containers
 

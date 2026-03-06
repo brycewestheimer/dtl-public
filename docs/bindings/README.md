@@ -26,9 +26,9 @@ The **C ABI** serves as the universal interface layer, providing a stable binary
 
 | Language | Guide | Status | Build Target |
 |----------|-------|--------|--------------|
-| C | [c_bindings.md](c_bindings.md) | Complete | `libdtl_c` |
-| Python | [python_bindings.md](python_bindings.md) | Complete | `_dtl` module |
-| Fortran | [fortran_bindings.md](fortran_bindings.md) | Documented | Via C ABI |
+| C | [c_bindings.md](c_bindings.md) | Complete (includes mode-aware NCCL `_ex` APIs) | `libdtl_c` |
+| Python | [python_bindings.md](python_bindings.md) | Complete core + mode-aware NCCL context APIs | `_dtl` module |
+| Fortran | [fortran_bindings.md](fortran_bindings.md) | Documented + explicit NCCL device collective C interop | Via C ABI |
 
 ## Quick Start
 
