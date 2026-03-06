@@ -208,6 +208,7 @@ dtl_status dtl_environment_make_world_context(dtl_environment_t env,
             delete impl;
             return DTL_ERROR_MPI;
         }
+        (void)MPI_Comm_set_errhandler(impl->comm, MPI_ERRORS_RETURN);
         impl->owns_comm = true;
         impl->initialized_mpi = false;
         impl->finalize_mpi = false;
@@ -272,6 +273,7 @@ dtl_status dtl_environment_make_world_context_gpu(dtl_environment_t env,
             delete impl;
             return DTL_ERROR_MPI;
         }
+        (void)MPI_Comm_set_errhandler(impl->comm, MPI_ERRORS_RETURN);
         impl->owns_comm = true;
         impl->initialized_mpi = false;
         impl->finalize_mpi = false;

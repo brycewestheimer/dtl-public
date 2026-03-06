@@ -150,13 +150,15 @@ dtl_status dtl_window_create(dtl_context_t ctx, void* base,
 
 #ifdef DTL_HAS_MPI
     impl->mpi_win = MPI_WIN_NULL;
-    if (ctx->domain_flags & dtl_context_s::HAS_MPI) {
+    if ((ctx->domain_flags & dtl_context_s::HAS_MPI) && ctx->size > 1) {
         MPI_Aint local_size = (base != nullptr) ? static_cast<MPI_Aint>(size) : 0;
         int err = MPI_Win_create(base, local_size, 1 /* disp_unit */,
                                  MPI_INFO_NULL, ctx->comm, &impl->mpi_win);
         if (err != MPI_SUCCESS) {
-            impl->mpi_win = MPI_WIN_NULL;
+            delete impl;
+            return DTL_ERROR_MPI;
         }
+        (void)MPI_Win_set_errhandler(impl->mpi_win, MPI_ERRORS_RETURN);
     }
 #endif
 
@@ -207,7 +209,7 @@ dtl_status dtl_window_allocate(dtl_context_t ctx,
 
 #ifdef DTL_HAS_MPI
     impl->mpi_win = MPI_WIN_NULL;
-    if (ctx->domain_flags & dtl_context_s::HAS_MPI) {
+    if ((ctx->domain_flags & dtl_context_s::HAS_MPI) && ctx->size > 1) {
         void* alloc_base = nullptr;
         int err = MPI_Win_allocate(static_cast<MPI_Aint>(size), 1 /* disp_unit */,
                                    MPI_INFO_NULL, ctx->comm, &alloc_base, &impl->mpi_win);
@@ -217,8 +219,11 @@ dtl_status dtl_window_allocate(dtl_context_t ctx,
             impl->base = alloc_base;
             impl->owns_memory = false;  // Freed by MPI_Win_free
         } else {
-            impl->mpi_win = MPI_WIN_NULL;
+            delete[] static_cast<char*>(impl->base);
+            delete impl;
+            return DTL_ERROR_MPI;
         }
+        (void)MPI_Win_set_errhandler(impl->mpi_win, MPI_ERRORS_RETURN);
     }
 #endif
 

@@ -448,18 +448,13 @@ inline dtl_status dispatch_create_vector(
     const vector_vtable** out_vtable,
     void** out_impl) {
 
-    // For device placements, currently return NOT_SUPPORTED until CUDA impl is added
+    // The C ABI must not silently construct host-backed objects for non-host
+    // placements. Until real CUDA/unified implementations exist here, fail
+    // fast at creation time instead of returning a misleading handle.
     if (opts.placement == DTL_PLACEMENT_DEVICE ||
         opts.placement == DTL_PLACEMENT_UNIFIED ||
         opts.placement == DTL_PLACEMENT_DEVICE_PREFERRED) {
-#if DTL_ENABLE_CUDA
-        // For now, unified can fall back to host
-        if (opts.placement == DTL_PLACEMENT_DEVICE) {
-            return DTL_ERROR_NOT_SUPPORTED;
-        }
-#else
         return DTL_ERROR_NOT_SUPPORTED;
-#endif
     }
 
     // Dispatch based on dtype

@@ -65,7 +65,8 @@ TEST(PolicyAvailability, HostAlwaysAvailable) {
 }
 
 TEST(PolicyAvailability, DevicePoliciesConditional) {
-    // Device policies are only available if CUDA is enabled
+    // Availability is a build-time property, not a guarantee that the V2 C
+    // container layer has a real implementation for that placement.
     int device_available = dtl_placement_available(DTL_PLACEMENT_DEVICE);
     int unified_available = dtl_placement_available(DTL_PLACEMENT_UNIFIED);
     int device_preferred_available = dtl_placement_available(DTL_PLACEMENT_DEVICE_PREFERRED);
@@ -73,7 +74,11 @@ TEST(PolicyAvailability, DevicePoliciesConditional) {
 #if DTL_ENABLE_CUDA
     EXPECT_EQ(device_available, 1);
     EXPECT_EQ(unified_available, 1);
+#ifdef DTL_C_ABI_ENABLE_DEVICE_PREFERRED
     EXPECT_EQ(device_preferred_available, 1);
+#else
+    EXPECT_EQ(device_preferred_available, 0);
+#endif
 #else
     EXPECT_EQ(device_available, 0);
     EXPECT_EQ(unified_available, 0);
@@ -165,11 +170,6 @@ TEST_F(CBindingsPolicies, VectorCreateWithCyclicPartition) {
 }
 
 TEST_F(CBindingsPolicies, VectorCreateWithUnavailablePlacementFails) {
-    // Skip if CUDA is available (then it won't fail)
-    if (dtl_placement_available(DTL_PLACEMENT_DEVICE)) {
-        GTEST_SKIP() << "CUDA is available, skipping unavailable placement test";
-    }
-
     dtl_container_options opts;
     dtl_container_options_init(&opts);
     opts.placement = DTL_PLACEMENT_DEVICE;
@@ -179,6 +179,20 @@ TEST_F(CBindingsPolicies, VectorCreateWithUnavailablePlacementFails) {
         ctx, DTL_DTYPE_FLOAT64, 100, &opts, &vec);
 
     EXPECT_EQ(status, DTL_ERROR_NOT_SUPPORTED);
+    EXPECT_EQ(vec, nullptr);
+}
+
+TEST_F(CBindingsPolicies, VectorCreateWithUnifiedPlacementFailsUntilImplemented) {
+    dtl_container_options opts;
+    dtl_container_options_init(&opts);
+    opts.placement = DTL_PLACEMENT_UNIFIED;
+
+    dtl_vector_t vec = nullptr;
+    dtl_status status = dtl_vector_create_with_options(
+        ctx, DTL_DTYPE_FLOAT64, 100, &opts, &vec);
+
+    EXPECT_EQ(status, DTL_ERROR_NOT_SUPPORTED);
+    EXPECT_EQ(vec, nullptr);
 }
 
 // ============================================================================
@@ -229,6 +243,32 @@ TEST_F(CBindingsPolicies, ArrayCreateWithBlockCyclicPartition) {
     EXPECT_NE(arr, nullptr);
 
     dtl_array_destroy(arr);
+}
+
+TEST_F(CBindingsPolicies, ArrayCreateWithDevicePlacementFailsUntilImplemented) {
+    dtl_container_options opts;
+    dtl_container_options_init(&opts);
+    opts.placement = DTL_PLACEMENT_DEVICE;
+
+    dtl_array_t arr = nullptr;
+    dtl_status status = dtl_array_create_with_options(
+        ctx, DTL_DTYPE_FLOAT64, 100, &opts, &arr);
+
+    EXPECT_EQ(status, DTL_ERROR_NOT_SUPPORTED);
+    EXPECT_EQ(arr, nullptr);
+}
+
+TEST_F(CBindingsPolicies, ArrayCreateWithUnifiedPlacementFailsUntilImplemented) {
+    dtl_container_options opts;
+    dtl_container_options_init(&opts);
+    opts.placement = DTL_PLACEMENT_UNIFIED;
+
+    dtl_array_t arr = nullptr;
+    dtl_status status = dtl_array_create_with_options(
+        ctx, DTL_DTYPE_FLOAT64, 100, &opts, &arr);
+
+    EXPECT_EQ(status, DTL_ERROR_NOT_SUPPORTED);
+    EXPECT_EQ(arr, nullptr);
 }
 
 // ============================================================================

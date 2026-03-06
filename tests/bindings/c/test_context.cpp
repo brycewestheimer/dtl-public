@@ -370,12 +370,21 @@ TEST(CBindingsContext, WithNccl) {
 
     dtl_context_t nccl_ctx = nullptr;
     dtl_status status = dtl_context_with_nccl(ctx, /*device_id=*/0, &nccl_ctx);
-    // May fail if NCCL/CUDA not available; that's acceptable
-    if (status == DTL_SUCCESS) {
-        EXPECT_NE(nccl_ctx, nullptr);
-        EXPECT_EQ(dtl_context_has_nccl(nccl_ctx), 1);
-        dtl_context_destroy(nccl_ctx);
-    }
+    EXPECT_EQ(status, DTL_ERROR_NOT_SUPPORTED);
+    EXPECT_EQ(nccl_ctx, nullptr);
+
+    dtl_context_destroy(ctx);
+}
+
+TEST(CBindingsContext, SplitNcclIsNotSupported) {
+    dtl_context_t ctx = nullptr;
+    ASSERT_EQ(dtl_context_create_default(&ctx), DTL_SUCCESS);
+
+    dtl_context_t split_ctx = nullptr;
+    dtl_status status = dtl_context_split_nccl(ctx, /*color=*/0, /*key=*/0, &split_ctx);
+
+    EXPECT_EQ(status, DTL_ERROR_NOT_SUPPORTED);
+    EXPECT_EQ(split_ctx, nullptr);
 
     dtl_context_destroy(ctx);
 }

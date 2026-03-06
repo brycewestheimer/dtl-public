@@ -10,6 +10,7 @@ find_package(GTest REQUIRED)
 
 # Test sources
 set(DTL_C_TEST_SOURCES
+    test_main.cpp
     test_types.cpp
     test_status.cpp
     test_environment.cpp
@@ -37,8 +38,22 @@ target_link_libraries(test_c_bindings
     PRIVATE
         dtl_c
         GTest::gtest
-        GTest::gtest_main
 )
+
+if(DTL_MPI_AVAILABLE)
+    target_compile_definitions(test_c_bindings PRIVATE DTL_HAS_MPI)
+    target_link_libraries(test_c_bindings PRIVATE MPI::MPI_CXX)
+endif()
+
+if(DTL_ENABLE_CUDA)
+    target_compile_definitions(test_c_bindings PRIVATE DTL_ENABLE_CUDA=1 DTL_HAS_CUDA=1)
+    target_link_libraries(test_c_bindings PRIVATE CUDA::cudart)
+endif()
+
+if(DTL_ENABLE_NCCL)
+    target_compile_definitions(test_c_bindings PRIVATE DTL_HAS_NCCL=1 DTL_HAS_CUDA=1)
+    target_link_libraries(test_c_bindings PRIVATE NCCL::NCCL CUDA::cudart)
+endif()
 
 # Include directories
 target_include_directories(test_c_bindings

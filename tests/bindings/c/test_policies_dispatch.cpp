@@ -178,11 +178,7 @@ TEST_F(PolicyDispatchTest, VectorHostPlacementQueryReturnsHost) {
     dtl_vector_destroy(vec);
 }
 
-TEST_F(PolicyDispatchTest, VectorDevicePlacementReturnsNotSupportedWithoutCuda) {
-    if (dtl_placement_available(DTL_PLACEMENT_DEVICE)) {
-        GTEST_SKIP() << "CUDA is available, skipping unsupported placement test";
-    }
-
+TEST_F(PolicyDispatchTest, VectorDevicePlacementCreationFailsWithoutSilentFallback) {
     dtl_container_options opts;
     dtl_container_options_init(&opts);
     opts.placement = DTL_PLACEMENT_DEVICE;
@@ -194,6 +190,32 @@ TEST_F(PolicyDispatchTest, VectorDevicePlacementReturnsNotSupportedWithoutCuda) 
     // Should return NOT_SUPPORTED, not silently fall back to host
     EXPECT_EQ(status, DTL_ERROR_NOT_SUPPORTED);
     EXPECT_EQ(vec, nullptr);
+}
+
+TEST_F(PolicyDispatchTest, VectorUnifiedPlacementCreationFailsWithoutSilentFallback) {
+    dtl_container_options opts;
+    dtl_container_options_init(&opts);
+    opts.placement = DTL_PLACEMENT_UNIFIED;
+
+    dtl_vector_t vec = nullptr;
+    dtl_status status = dtl_vector_create_with_options(
+        ctx, DTL_DTYPE_FLOAT64, 100, &opts, &vec);
+
+    EXPECT_EQ(status, DTL_ERROR_NOT_SUPPORTED);
+    EXPECT_EQ(vec, nullptr);
+}
+
+TEST_F(PolicyDispatchTest, ArrayUnifiedPlacementCreationFailsWithoutSilentFallback) {
+    dtl_container_options opts;
+    dtl_container_options_init(&opts);
+    opts.placement = DTL_PLACEMENT_UNIFIED;
+
+    dtl_array_t arr = nullptr;
+    dtl_status status = dtl_array_create_with_options(
+        ctx, DTL_DTYPE_FLOAT64, 100, &opts, &arr);
+
+    EXPECT_EQ(status, DTL_ERROR_NOT_SUPPORTED);
+    EXPECT_EQ(arr, nullptr);
 }
 
 // ============================================================================

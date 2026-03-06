@@ -1085,28 +1085,14 @@ dtl_status dtl_gatherv(dtl_context_t ctx,
 
 #ifdef DTL_HAS_NCCL
     if (use_nccl(ctx) && nccl_supports_dtype(senddtype)) {
-        ncclDataType_t nccl_type = dtype_to_nccl(senddtype);
-        size_t elem_size = nccl_dtype_size(senddtype);
-        ncclComm_t comm = static_cast<ncclComm_t>(ctx->nccl_comm);
-        cudaStream_t stream = static_cast<cudaStream_t>(ctx->cuda_stream);
-        ncclResult_t nccl_err;
-        nccl_err = ncclGroupStart();
-        if (nccl_err != ncclSuccess) return DTL_ERROR_COLLECTIVE_FAILED;
-        // All ranks send to root
-        nccl_err = ncclSend(sendbuf, sendcount, nccl_type, root, comm, stream);
-        if (nccl_err != ncclSuccess) { ncclGroupEnd(); return DTL_ERROR_COLLECTIVE_FAILED; }
-        // Root receives from all ranks with variable counts
-        if (ctx->rank == root && recvcounts && displs) {
-            for (int i = 0; i < ctx->size; ++i) {
-                char* dst = static_cast<char*>(recvbuf) + displs[i] * elem_size;
-                nccl_err = ncclRecv(dst, recvcounts[i], nccl_type, i, comm, stream);
-                if (nccl_err != ncclSuccess) { ncclGroupEnd(); return DTL_ERROR_COLLECTIVE_FAILED; }
-            }
-        }
-        nccl_err = ncclGroupEnd();
-        if (nccl_err != ncclSuccess) return DTL_ERROR_COLLECTIVE_FAILED;
+        (void)sendbuf;
+        (void)sendcount;
+        (void)recvbuf;
+        (void)recvcounts;
+        (void)displs;
         (void)recvdtype;
-        return nccl_stream_sync(ctx);
+        (void)root;
+        return DTL_ERROR_NOT_SUPPORTED;
     }
 #endif
 
@@ -1169,28 +1155,14 @@ dtl_status dtl_scatterv(dtl_context_t ctx,
 
 #ifdef DTL_HAS_NCCL
     if (use_nccl(ctx) && nccl_supports_dtype(senddtype)) {
-        ncclDataType_t nccl_type = dtype_to_nccl(senddtype);
-        size_t elem_size = nccl_dtype_size(senddtype);
-        ncclComm_t comm = static_cast<ncclComm_t>(ctx->nccl_comm);
-        cudaStream_t stream = static_cast<cudaStream_t>(ctx->cuda_stream);
-        ncclResult_t nccl_err;
-        nccl_err = ncclGroupStart();
-        if (nccl_err != ncclSuccess) return DTL_ERROR_COLLECTIVE_FAILED;
-        // Root sends to all ranks with variable counts
-        if (ctx->rank == root && sendcounts && displs) {
-            for (int i = 0; i < ctx->size; ++i) {
-                const char* src = static_cast<const char*>(sendbuf) + displs[i] * elem_size;
-                nccl_err = ncclSend(src, sendcounts[i], nccl_type, i, comm, stream);
-                if (nccl_err != ncclSuccess) { ncclGroupEnd(); return DTL_ERROR_COLLECTIVE_FAILED; }
-            }
-        }
-        // All ranks receive from root
-        nccl_err = ncclRecv(recvbuf, recvcount, nccl_type, root, comm, stream);
-        if (nccl_err != ncclSuccess) { ncclGroupEnd(); return DTL_ERROR_COLLECTIVE_FAILED; }
-        nccl_err = ncclGroupEnd();
-        if (nccl_err != ncclSuccess) return DTL_ERROR_COLLECTIVE_FAILED;
+        (void)sendbuf;
+        (void)sendcounts;
+        (void)displs;
+        (void)recvbuf;
+        (void)recvcount;
         (void)recvdtype;
-        return nccl_stream_sync(ctx);
+        (void)root;
+        return DTL_ERROR_NOT_SUPPORTED;
     }
 #endif
 
@@ -1258,27 +1230,12 @@ dtl_status dtl_allgatherv(dtl_context_t ctx,
 
 #ifdef DTL_HAS_NCCL
     if (use_nccl(ctx) && nccl_supports_dtype(dtype) && recvcounts && displs) {
-        ncclDataType_t nccl_type = dtype_to_nccl(dtype);
-        size_t elem_size = nccl_dtype_size(dtype);
-        ncclComm_t comm = static_cast<ncclComm_t>(ctx->nccl_comm);
-        cudaStream_t stream = static_cast<cudaStream_t>(ctx->cuda_stream);
-        ncclResult_t nccl_err;
-        nccl_err = ncclGroupStart();
-        if (nccl_err != ncclSuccess) return DTL_ERROR_COLLECTIVE_FAILED;
-        // Send own data to all ranks
-        for (int i = 0; i < ctx->size; ++i) {
-            nccl_err = ncclSend(sendbuf, sendcount, nccl_type, i, comm, stream);
-            if (nccl_err != ncclSuccess) { ncclGroupEnd(); return DTL_ERROR_COLLECTIVE_FAILED; }
-        }
-        // Receive from all ranks at variable offsets
-        for (int i = 0; i < ctx->size; ++i) {
-            char* dst = static_cast<char*>(recvbuf) + displs[i] * elem_size;
-            nccl_err = ncclRecv(dst, recvcounts[i], nccl_type, i, comm, stream);
-            if (nccl_err != ncclSuccess) { ncclGroupEnd(); return DTL_ERROR_COLLECTIVE_FAILED; }
-        }
-        nccl_err = ncclGroupEnd();
-        if (nccl_err != ncclSuccess) return DTL_ERROR_COLLECTIVE_FAILED;
-        return nccl_stream_sync(ctx);
+        (void)sendbuf;
+        (void)sendcount;
+        (void)recvbuf;
+        (void)recvcounts;
+        (void)displs;
+        return DTL_ERROR_NOT_SUPPORTED;
     }
 #endif
 
@@ -1342,26 +1299,14 @@ dtl_status dtl_alltoallv(dtl_context_t ctx,
 #ifdef DTL_HAS_NCCL
     if (use_nccl(ctx) && nccl_supports_dtype(senddtype)
         && sendcounts && sdispls && recvcounts && rdispls) {
-        ncclDataType_t nccl_type = dtype_to_nccl(senddtype);
-        size_t send_elem_size = nccl_dtype_size(senddtype);
-        size_t recv_elem_size = nccl_dtype_size(senddtype);  // same type for NCCL path
-        ncclComm_t comm = static_cast<ncclComm_t>(ctx->nccl_comm);
-        cudaStream_t stream = static_cast<cudaStream_t>(ctx->cuda_stream);
-        ncclResult_t nccl_err;
-        nccl_err = ncclGroupStart();
-        if (nccl_err != ncclSuccess) return DTL_ERROR_COLLECTIVE_FAILED;
-        for (int i = 0; i < ctx->size; ++i) {
-            const char* src = static_cast<const char*>(sendbuf) + sdispls[i] * send_elem_size;
-            char* dst = static_cast<char*>(recvbuf) + rdispls[i] * recv_elem_size;
-            nccl_err = ncclSend(src, sendcounts[i], nccl_type, i, comm, stream);
-            if (nccl_err != ncclSuccess) { ncclGroupEnd(); return DTL_ERROR_COLLECTIVE_FAILED; }
-            nccl_err = ncclRecv(dst, recvcounts[i], nccl_type, i, comm, stream);
-            if (nccl_err != ncclSuccess) { ncclGroupEnd(); return DTL_ERROR_COLLECTIVE_FAILED; }
-        }
-        nccl_err = ncclGroupEnd();
-        if (nccl_err != ncclSuccess) return DTL_ERROR_COLLECTIVE_FAILED;
+        (void)sendbuf;
+        (void)sendcounts;
+        (void)sdispls;
+        (void)recvbuf;
+        (void)recvcounts;
+        (void)rdispls;
         (void)recvdtype;
-        return nccl_stream_sync(ctx);
+        return DTL_ERROR_NOT_SUPPORTED;
     }
 #endif
 

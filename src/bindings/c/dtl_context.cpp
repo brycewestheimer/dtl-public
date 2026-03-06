@@ -140,6 +140,7 @@ dtl_status dtl_context_create(dtl_context_t* ctx, const dtl_context_options* opt
         delete impl;
         return DTL_ERROR_MPI;
     }
+    (void)MPI_Comm_set_errhandler(impl->comm, MPI_ERRORS_RETURN);
     impl->owns_comm = true;
 
     // Get rank and size
@@ -375,6 +376,7 @@ dtl_status dtl_context_dup(dtl_context_t src, dtl_context_t* dst) {
         delete impl;
         return DTL_ERROR_MPI;
     }
+    (void)MPI_Comm_set_errhandler(impl->comm, MPI_ERRORS_RETURN);
     impl->owns_comm = true;
     impl->initialized_mpi = false;  // Don't track MPI init for duplicates
     impl->finalize_mpi = false;
@@ -449,6 +451,7 @@ dtl_status dtl_context_split(dtl_context_t ctx, int color, int key,
         delete impl;
         return DTL_ERROR_MPI;
     }
+    (void)MPI_Comm_set_errhandler(impl->comm, MPI_ERRORS_RETURN);
 
     // Get new rank and size
     MPI_Comm_rank(impl->comm, &impl->rank);
@@ -528,6 +531,7 @@ dtl_status dtl_context_with_cuda(dtl_context_t ctx, int device_id,
             delete impl;
             return DTL_ERROR_MPI;
         }
+        (void)MPI_Comm_set_errhandler(impl->comm, MPI_ERRORS_RETURN);
         impl->owns_comm = true;
         impl->initialized_mpi = false;
         impl->finalize_mpi = false;
@@ -553,118 +557,8 @@ dtl_status dtl_context_with_nccl(dtl_context_t ctx, int device_id,
         return DTL_ERROR_NOT_SUPPORTED;
     }
 
-#if defined(DTL_HAS_NCCL) && defined(DTL_HAS_MPI)
-    // Verify CUDA device
-    int device_count = 0;
-    cudaError_t cuda_err = cudaGetDeviceCount(&device_count);
-    if (cuda_err != cudaSuccess || device_count == 0) {
-        return DTL_ERROR_BACKEND_INIT_FAILED;
-    }
-    if (device_id < 0 || device_id >= device_count) {
-        return DTL_ERROR_INVALID_ARGUMENT;
-    }
-
-    // Set the device
-    cuda_err = cudaSetDevice(device_id);
-    if (cuda_err != cudaSuccess) {
-        return DTL_ERROR_BACKEND_INIT_FAILED;
-    }
-
-    // Allocate new context
-    dtl_context_s* impl = nullptr;
-    try {
-        impl = new dtl_context_s();
-    } catch (...) {
-        return DTL_ERROR_ALLOCATION_FAILED;
-    }
-
-    // Copy fields from source
-    impl->rank = ctx->rank;
-    impl->size = ctx->size;
-    impl->device_id = device_id;
-    impl->determinism_mode = ctx->determinism_mode;
-    impl->reduction_schedule_policy = ctx->reduction_schedule_policy;
-    impl->progress_ordering_policy = ctx->progress_ordering_policy;
-    impl->magic = dtl_context_s::VALID_MAGIC;
-    impl->domain_flags = ctx->domain_flags | dtl_context_s::HAS_CUDA | dtl_context_s::HAS_NCCL;
-    impl->error_handler = ctx->error_handler;
-    impl->error_handler_user_data = ctx->error_handler_user_data;
-
-    // Duplicate MPI communicator
-    int mpi_err = MPI_Comm_dup(ctx->comm, &impl->comm);
-    if (mpi_err != MPI_SUCCESS) {
-        delete impl;
-        return DTL_ERROR_MPI;
-    }
-    impl->owns_comm = true;
-    impl->initialized_mpi = false;
-    impl->finalize_mpi = false;
-
-    // Step 1: Rank 0 generates NCCL unique ID
-    ncclUniqueId unique_id;
-    if (impl->rank == 0) {
-        ncclResult_t nccl_err = ncclGetUniqueId(&unique_id);
-        if (nccl_err != ncclSuccess) {
-            int failure_flag = -1;
-            MPI_Bcast(&failure_flag, 1, MPI_INT, 0, impl->comm);
-            MPI_Comm_free(&impl->comm);
-            delete impl;
-            return DTL_ERROR_BACKEND_INIT_FAILED;
-        }
-    }
-
-    // Step 2: Broadcast success flag and unique ID
-    int success_flag = (impl->rank == 0) ? 1 : 0;
-    MPI_Bcast(&success_flag, 1, MPI_INT, 0, impl->comm);
-    if (success_flag < 0) {
-        MPI_Comm_free(&impl->comm);
-        delete impl;
-        return DTL_ERROR_BACKEND_INIT_FAILED;
-    }
-
-    MPI_Bcast(&unique_id, sizeof(ncclUniqueId), MPI_BYTE, 0, impl->comm);
-
-    // Step 3: Create CUDA stream for NCCL operations
-    cudaStream_t stream = nullptr;
-    cuda_err = cudaStreamCreate(&stream);
-    if (cuda_err != cudaSuccess) {
-        MPI_Comm_free(&impl->comm);
-        delete impl;
-        return DTL_ERROR_BACKEND_INIT_FAILED;
-    }
-
-    // Step 4: Initialize NCCL communicator
-    ncclComm_t nccl_comm = nullptr;
-    ncclResult_t nccl_err = ncclCommInitRank(&nccl_comm, impl->size, unique_id, impl->rank);
-    if (nccl_err != ncclSuccess) {
-        cudaStreamDestroy(stream);
-        MPI_Comm_free(&impl->comm);
-        delete impl;
-        return DTL_ERROR_BACKEND_INIT_FAILED;
-    }
-
-    impl->nccl_comm = nccl_comm;
-    impl->cuda_stream = stream;
-
-    // Allocate GPU scratch buffer for NCCL barrier
-    void* barrier_buf = nullptr;
-    cuda_err = cudaMalloc(&barrier_buf, sizeof(int));
-    if (cuda_err != cudaSuccess) {
-        ncclCommDestroy(nccl_comm);
-        cudaStreamDestroy(stream);
-        MPI_Comm_free(&impl->comm);
-        delete impl;
-        return DTL_ERROR_BACKEND_INIT_FAILED;
-    }
-    cudaMemset(barrier_buf, 0, sizeof(int));
-    impl->barrier_scratch = barrier_buf;
-
-    *out = impl;
-    return DTL_SUCCESS;
-#else
     (void)device_id;
     return DTL_ERROR_NOT_SUPPORTED;
-#endif
 }
 
 dtl_status dtl_context_split_nccl(dtl_context_t ctx,
@@ -686,114 +580,9 @@ dtl_status dtl_context_split_nccl(dtl_context_t ctx,
         return DTL_ERROR_NOT_SUPPORTED;
     }
 
-#if defined(DTL_HAS_NCCL) && defined(DTL_HAS_MPI)
-    // Step 1: Split MPI communicator
-    MPI_Comm split_comm = MPI_COMM_NULL;
-    int mpi_err = MPI_Comm_split(ctx->comm, color, key, &split_comm);
-    if (mpi_err != MPI_SUCCESS) {
-        return DTL_ERROR_MPI;
-    }
-
-    int new_rank = 0;
-    int new_size = 0;
-    MPI_Comm_rank(split_comm, &new_rank);
-    MPI_Comm_size(split_comm, &new_size);
-
-    // Step 2: Set CUDA device
-    cudaError_t cuda_err = cudaSetDevice(ctx->device_id);
-    if (cuda_err != cudaSuccess) {
-        MPI_Comm_free(&split_comm);
-        return DTL_ERROR_BACKEND_INIT_FAILED;
-    }
-
-    // Step 3: Generate and broadcast NCCL unique ID within split group
-    ncclUniqueId unique_id;
-    if (new_rank == 0) {
-        ncclResult_t nccl_err = ncclGetUniqueId(&unique_id);
-        if (nccl_err != ncclSuccess) {
-            int failure_flag = -1;
-            MPI_Bcast(&failure_flag, 1, MPI_INT, 0, split_comm);
-            MPI_Comm_free(&split_comm);
-            return DTL_ERROR_BACKEND_INIT_FAILED;
-        }
-    }
-
-    int success_flag = (new_rank == 0) ? 1 : 0;
-    MPI_Bcast(&success_flag, 1, MPI_INT, 0, split_comm);
-    if (success_flag < 0) {
-        MPI_Comm_free(&split_comm);
-        return DTL_ERROR_BACKEND_INIT_FAILED;
-    }
-
-    MPI_Bcast(&unique_id, sizeof(ncclUniqueId), MPI_BYTE, 0, split_comm);
-
-    // Step 4: Create CUDA stream
-    cudaStream_t stream = nullptr;
-    cuda_err = cudaStreamCreate(&stream);
-    if (cuda_err != cudaSuccess) {
-        MPI_Comm_free(&split_comm);
-        return DTL_ERROR_BACKEND_INIT_FAILED;
-    }
-
-    // Step 5: Initialize NCCL communicator for the split group
-    ncclComm_t nccl_comm = nullptr;
-    ncclResult_t nccl_err = ncclCommInitRank(&nccl_comm, new_size, unique_id, new_rank);
-    if (nccl_err != ncclSuccess) {
-        cudaStreamDestroy(stream);
-        MPI_Comm_free(&split_comm);
-        return DTL_ERROR_BACKEND_INIT_FAILED;
-    }
-
-    // Step 6: Allocate barrier scratch buffer
-    void* barrier_buf = nullptr;
-    cuda_err = cudaMalloc(&barrier_buf, sizeof(int));
-    if (cuda_err != cudaSuccess) {
-        ncclCommDestroy(nccl_comm);
-        cudaStreamDestroy(stream);
-        MPI_Comm_free(&split_comm);
-        return DTL_ERROR_BACKEND_INIT_FAILED;
-    }
-    cudaMemset(barrier_buf, 0, sizeof(int));
-
-    // Step 7: Allocate and populate new context
-    dtl_context_s* impl = nullptr;
-    try {
-        impl = new dtl_context_s();
-    } catch (...) {
-        cudaFree(barrier_buf);
-        ncclCommDestroy(nccl_comm);
-        cudaStreamDestroy(stream);
-        MPI_Comm_free(&split_comm);
-        return DTL_ERROR_ALLOCATION_FAILED;
-    }
-
-    impl->rank = new_rank;
-    impl->size = new_size;
-    impl->device_id = ctx->device_id;
-    impl->determinism_mode = ctx->determinism_mode;
-    impl->reduction_schedule_policy = ctx->reduction_schedule_policy;
-    impl->progress_ordering_policy = ctx->progress_ordering_policy;
-    impl->magic = dtl_context_s::VALID_MAGIC;
-    impl->domain_flags = ctx->domain_flags;  // Preserves MPI + CUDA + NCCL flags
-    impl->error_handler = ctx->error_handler;
-    impl->error_handler_user_data = ctx->error_handler_user_data;
-
-    impl->comm = split_comm;
-    impl->owns_comm = true;
-    impl->initialized_mpi = false;
-    impl->finalize_mpi = false;
-
-    impl->nccl_comm = nccl_comm;
-    impl->cuda_stream = stream;
-    impl->barrier_scratch = barrier_buf;
-
-    *out = impl;
-    return DTL_SUCCESS;
-#else
     (void)color;
     (void)key;
     return DTL_ERROR_NOT_SUPPORTED;
-#endif
 }
 
 }  // extern "C"
