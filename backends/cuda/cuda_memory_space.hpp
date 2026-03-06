@@ -176,10 +176,11 @@ public:
 
     /// @brief Allocate aligned device memory
     /// @param size Number of bytes to allocate
-    /// @param alignment Alignment requirement
-    /// @return Pointer to allocated memory or nullptr on failure
+    /// @param alignment Alignment requirement (must be power of 2)
+    /// @return Pointer to aligned memory or nullptr on failure
     /// @note CUDA guarantees 256-byte alignment from cudaMalloc.
-    ///       Alignments > 256 are rejected to prevent memory leaks.
+    ///       For alignments > 256, over-allocates and stores the original
+    ///       pointer in the bytes immediately preceding the aligned address.
     [[nodiscard]] void* allocate(size_type size, size_type alignment) {
 #if DTL_ENABLE_CUDA
         // CUDA allocations are already 256-byte aligned from cudaMalloc.
@@ -188,12 +189,49 @@ public:
             return allocate(size);
         }
 
-        // Reject alignments > 256: over-allocating loses the original pointer
-        // returned by cudaMalloc, causing memory leaks and UB on cudaFree.
-        return nullptr;
+        // For larger alignments, over-allocate to guarantee alignment.
+        // Layout: [original_ptr storage (sizeof(void*)) | padding | aligned data]
+        // The original pointer is stored just before the aligned address so
+        // deallocate_aligned() can recover it for cudaFree.
+        size_type extra = alignment + sizeof(void*);
+        void* raw = allocate(size + extra);
+        if (!raw) return nullptr;
+
+        // Compute aligned address, leaving room for the stored pointer
+        auto raw_addr = reinterpret_cast<uintptr_t>(raw) + sizeof(void*);
+        auto aligned_addr = (raw_addr + alignment - 1) & ~(alignment - 1);
+        auto* aligned_ptr = reinterpret_cast<void*>(aligned_addr);
+
+        // Store original pointer just before the aligned address
+        reinterpret_cast<void**>(aligned_ptr)[-1] = raw;
+
+        return aligned_ptr;
 #else
         (void)size; (void)alignment;
         return nullptr;
+#endif
+    }
+
+    /// @brief Deallocate memory allocated with alignment > 256
+    /// @param ptr Aligned pointer (from allocate with alignment > 256)
+    /// @param size Size of allocation (original requested size)
+    /// @param alignment Alignment used during allocation
+    /// @note For alignment <= 256, use regular deallocate() instead.
+    void deallocate_aligned(void* ptr, size_type size, size_type alignment) noexcept {
+#if DTL_ENABLE_CUDA
+        if (ptr == nullptr) return;
+
+        if (alignment <= 256) {
+            deallocate(ptr, size);
+            return;
+        }
+
+        // Recover original pointer stored just before the aligned address
+        void* raw = reinterpret_cast<void**>(ptr)[-1];
+        size_type extra = alignment + sizeof(void*);
+        deallocate(raw, size + extra);
+#else
+        (void)ptr; (void)size; (void)alignment;
 #endif
     }
 

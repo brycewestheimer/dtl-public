@@ -110,6 +110,28 @@ concept DistributedAssociativeContainer =
         { m.end() };
     };
 
+/// @brief Unified concept for any distributed collection
+/// @details This is the most general concept that both DistributedContainer
+///          (sequence-based: vector, array, tensor, span) and
+///          DistributedAssociativeContainer (key-based: map) satisfy.
+///          Use this when writing generic code that operates on either type
+///          of distributed collection.
+///
+/// @par Requirements:
+/// - Has a value_type and size_type
+/// - Has a local_size() method
+/// - Is iterable (begin/end)
+///
+/// @since 0.1.0
+template <typename C>
+concept DistributedCollection =
+    requires(C& c, const C& cc) {
+        typename C::size_type;
+        { cc.local_size() } -> std::convertible_to<typename C::size_type>;
+        { c.begin() };
+        { c.end() };
+    };
+
 /// @brief Concept for distributed map containers
 /// @details Maps are associative containers with key-value semantics.
 ///

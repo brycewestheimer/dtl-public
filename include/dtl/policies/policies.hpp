@@ -307,10 +307,50 @@ struct policy_count {
     static constexpr size_type execution = (is_execution_policy_v<Policies> + ... + 0);
     static constexpr size_type error = (is_error_policy_v<Policies> + ... + 0);
 
+    /// @brief Total number of recognized policies
+    static constexpr size_type total = partition + placement + consistency + execution + error;
+
+    /// @brief Number of types that are NOT any recognized policy
+    static constexpr size_type unrecognized = sizeof...(Policies) - total;
+
     /// @brief Check that at most one of each policy type is specified
     static constexpr bool no_duplicates =
         partition <= 1 && placement <= 1 && consistency <= 1 &&
         execution <= 1 && error <= 1;
+
+    /// @brief Validate policy pack with descriptive error messages
+    /// @details Call this from container constructors or as a static_assert
+    ///          to get clear error messages for policy composition mistakes.
+    static constexpr bool validate() {
+        static_assert(partition <= 1,
+            "DTL: Multiple partition policies specified. "
+            "Only one of block_partition, cyclic_partition, hash_partition, "
+            "replicated, dynamic_block, block_nd_partition, or custom_partition "
+            "may be used at a time.");
+        static_assert(placement <= 1,
+            "DTL: Multiple placement policies specified. "
+            "Only one of host_only, device_only, device_only_runtime, "
+            "device_preferred, unified_memory, or explicit_placement "
+            "may be used at a time.");
+        static_assert(consistency <= 1,
+            "DTL: Multiple consistency policies specified. "
+            "Only one of bulk_synchronous, sequential_consistent, "
+            "release_acquire, or relaxed may be used at a time.");
+        static_assert(execution <= 1,
+            "DTL: Multiple execution policies specified. "
+            "Only one of seq, par, async, on_stream, or cuda_exec "
+            "may be used at a time.");
+        static_assert(error <= 1,
+            "DTL: Multiple error policies specified. "
+            "Only one of expected_policy, throwing_policy, "
+            "terminating_policy, or callback_policy may be used at a time.");
+        static_assert(unrecognized == 0,
+            "DTL: Unrecognized type in policy pack. "
+            "All template parameters must be valid DTL policies "
+            "(partition, placement, consistency, execution, or error). "
+            "Check for typos or types from wrong namespaces.");
+        return true;
+    }
 };
 
 }  // namespace dtl

@@ -1029,3 +1029,80 @@ int main(int argc, char** argv) {
 
 - [Python Bindings Guide](python_bindings.md) (uses C ABI internally)
 - [Fortran Bindings Guide](fortran_bindings.md) (via ISO_C_BINDING)
+
+## Thread Safety
+
+A `dtl_context_t` handle is **not safe for concurrent use** from multiple
+threads. However, multi-threaded programs can use DTL safely by following
+these patterns:
+
+### Pattern 1: One context per thread
+
+```c
+void* worker(void* arg) {
+    int thread_id = *(int*)arg;
+
+    // Each thread creates its own context
+    dtl_context_t ctx;
+    dtl_context_create_default(&ctx);
+
+    // Create and work with containers independently
+    dtl_vector_t vec;
+    dtl_vector_create_f64(&vec, ctx, 1000);
+
+    // ... compute ...
+
+    dtl_vector_destroy(vec);
+    dtl_context_destroy(ctx);
+    return NULL;
+}
+```
+
+### Pattern 2: Duplicate context for threads
+
+```c
+// Main thread creates the primary context
+dtl_context_t main_ctx;
+dtl_context_create_default(&main_ctx);
+
+// Before spawning threads, duplicate for each
+dtl_context_t thread_ctx;
+dtl_context_dup(main_ctx, &thread_ctx);
+
+// Pass thread_ctx to the worker thread
+// Each thread uses its own duplicated context
+```
+
+### Pattern 3: External synchronization
+
+```c
+pthread_mutex_t ctx_lock = PTHREAD_MUTEX_INITIALIZER;
+dtl_context_t shared_ctx;
+
+void* worker(void* arg) {
+    // Serialize access to shared context
+    pthread_mutex_lock(&ctx_lock);
+    dtl_context_barrier(shared_ctx);
+    pthread_mutex_unlock(&ctx_lock);
+    return NULL;
+}
+```
+
+### Recommended approach
+
+**Pattern 1** (one context per thread) is recommended for most use cases.
+It provides complete isolation with no synchronization overhead. Each
+context duplicates the MPI communicator internally, ensuring message
+isolation between threads.
+
+For GPU applications with multiple CUDA streams, use Pattern 2 and set
+different device IDs for each context:
+
+```c
+dtl_context_options opts;
+dtl_context_options_init(&opts);
+opts.device_id = thread_id % num_gpus;
+
+dtl_context_t ctx;
+dtl_context_create(&ctx, &opts);
+```

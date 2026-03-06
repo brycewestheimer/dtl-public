@@ -89,9 +89,9 @@ struct node_topology {
 // BETA BACKEND
 // ---------------------------------------------------------------------------
 // Status:   Beta — core hierarchical operations implemented
-// Supports: barrier, broadcast, allreduce (two-level NCCL + MPI)
-// Missing:  - GPUDirect RDMA inter-node data path
-//           - Host-staging fallback for non-GPUDirect systems
+// Supports: barrier, broadcast, allreduce (two-level NCCL + MPI),
+//           GPUDirect RDMA inter-node data path (when available),
+//           host-staging fallback for non-GPUDirect systems
 // Requires: DTL_ENABLE_MPI, DTL_ENABLE_NCCL, DTL_ENABLE_CUDA at build time.
 // ---------------------------------------------------------------------------
 
@@ -116,6 +116,12 @@ public:
 
         /// @brief Size of host staging buffer per rank
         size_type staging_buffer_size = 64 * 1024 * 1024;  // 64 MB
+
+        /// @brief Threshold below which GPUDirect is used directly (bytes)
+        /// @details Messages smaller than this are sent via GPUDirect RDMA
+        ///          (if available). Larger messages use the host-staging path
+        ///          to avoid stalling the GPU. Set to 0 to always stage.
+        size_type gpu_direct_threshold = 8 * 1024 * 1024;  // 8 MB
     };
 
     /// @brief Default constructor
@@ -151,6 +157,7 @@ public:
     hierarchical_communicator(hierarchical_communicator&& other) noexcept
         : topology_(other.topology_)
         , config_(other.config_)
+        , gpu_direct_available_(other.gpu_direct_available_)
 #if DTL_ENABLE_MPI
         , world_comm_(other.world_comm_)
         , node_comm_(other.node_comm_)
@@ -515,6 +522,11 @@ private:
 #if DTL_ENABLE_NCCL && DTL_ENABLE_CUDA
         initialize_nccl();
 #endif
+
+        // Detect GPUDirect RDMA support
+#if DTL_ENABLE_CUDA
+        gpu_direct_available_ = detect_gpu_direct_support();
+#endif
     }
 #endif
 
@@ -531,6 +543,26 @@ private:
                          id, topology_.local_rank);
     }
 #endif
+
+    /// @brief Detect if GPUDirect RDMA is available
+    /// @details Checks if the CUDA device supports unified addressing
+    ///          (required for GPU-aware MPI to work with device pointers).
+    [[nodiscard]] bool detect_gpu_direct_support() const noexcept {
+#if DTL_ENABLE_CUDA
+        if (!config_.enable_gpu_direct) return false;
+
+        int device_id = 0;
+        cudaError_t err = cudaGetDevice(&device_id);
+        if (err != cudaSuccess) return false;
+
+        int unified_addressing = 0;
+        err = cudaDeviceGetAttribute(&unified_addressing,
+                                      cudaDevAttrUnifiedAddressing, device_id);
+        return (err == cudaSuccess && unified_addressing != 0);
+#else
+        return false;
+#endif
+    }
 
     void cleanup() {
 #if DTL_ENABLE_NCCL
@@ -754,13 +786,19 @@ private:
                                   rank_t dest, int tag) {
 #if DTL_ENABLE_MPI
 #if DTL_ENABLE_CUDA
-        // Stage from GPU to host, then MPI send
-        if (staging_buf_ && bytes <= config_.staging_buffer_size) {
+        if (config_.enable_gpu_direct && gpu_direct_available_ &&
+            bytes <= config_.gpu_direct_threshold) {
+            // GPUDirect RDMA path: pass device pointer directly to MPI
+            // Requires GPU-aware MPI (e.g., OpenMPI + UCX with CUDA support)
+            MPI_Send(data, static_cast<int>(bytes), MPI_BYTE,
+                     dest, tag, world_comm_);
+        } else if (staging_buf_ && bytes <= config_.staging_buffer_size) {
+            // Host-staging path: copy to pinned host memory, then MPI send
             cudaMemcpy(staging_buf_, data, bytes, cudaMemcpyDeviceToHost);
             MPI_Send(staging_buf_, static_cast<int>(bytes), MPI_BYTE,
                      dest, tag, world_comm_);
         } else {
-            // Assume GPU-aware MPI
+            // Fallback: GPU-aware MPI for large messages
             MPI_Send(data, static_cast<int>(bytes), MPI_BYTE,
                      dest, tag, world_comm_);
         }
@@ -806,11 +844,18 @@ private:
                                   rank_t source, int tag) {
 #if DTL_ENABLE_MPI
 #if DTL_ENABLE_CUDA
-        if (staging_buf_ && bytes <= config_.staging_buffer_size) {
+        if (config_.enable_gpu_direct && gpu_direct_available_ &&
+            bytes <= config_.gpu_direct_threshold) {
+            // GPUDirect RDMA path: receive directly into device memory
+            MPI_Recv(data, static_cast<int>(bytes), MPI_BYTE,
+                     source, tag, world_comm_, MPI_STATUS_IGNORE);
+        } else if (staging_buf_ && bytes <= config_.staging_buffer_size) {
+            // Host-staging path
             MPI_Recv(staging_buf_, static_cast<int>(bytes), MPI_BYTE,
                      source, tag, world_comm_, MPI_STATUS_IGNORE);
             cudaMemcpy(data, staging_buf_, bytes, cudaMemcpyHostToDevice);
         } else {
+            // Fallback: GPU-aware MPI for large messages
             MPI_Recv(data, static_cast<int>(bytes), MPI_BYTE,
                      source, tag, world_comm_, MPI_STATUS_IGNORE);
         }
@@ -868,6 +913,7 @@ private:
 
     node_topology topology_;
     config config_;
+    bool gpu_direct_available_ = false;
 
 #if DTL_ENABLE_MPI
     MPI_Comm world_comm_ = MPI_COMM_NULL;

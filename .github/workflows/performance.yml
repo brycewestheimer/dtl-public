@@ -4,6 +4,11 @@ on:
   schedule:
     # Nightly at 2 AM UTC
     - cron: '0 2 * * *'
+  pull_request:
+    paths:
+      - 'include/**'
+      - 'backends/**'
+      - 'benchmarks/**'
   workflow_dispatch:
     inputs:
       baseline_update:
@@ -160,12 +165,31 @@ jobs:
               for item in regressions:
                   print(f"  WARNING: {item['name']}: {item['change']:.1f}% slower")
               print(f"\nFound {len(regressions)} regression(s) exceeding {REGRESSION_THRESHOLD*100}% threshold")
-              # Don't fail the workflow, just warn
+
+              # Write summary for GitHub step summary
+              with open('benchmark_results/regression_summary.md', 'w') as f:
+                  f.write("## Performance Regression Report\n\n")
+                  f.write(f"**{len(regressions)} regression(s) detected** (>{REGRESSION_THRESHOLD*100:.0f}% threshold)\n\n")
+                  f.write("| Benchmark | Baseline (ns) | Current (ns) | Change |\n")
+                  f.write("|-----------|--------------|-------------|--------|\n")
+                  for item in regressions:
+                      f.write(f"| `{item['name']}` | {item['baseline']:.0f} | {item['current']:.0f} | +{item['change']:.1f}% |\n")
+                  if improvements:
+                      f.write(f"\n**{len(improvements)} improvement(s)** also detected.\n")
+
+              sys.exit(1)  # Fail the workflow on regression
           else:
               print("\nNo significant regressions detected.")
           EOF
           else
             echo "No baseline found. This run will establish the baseline."
+          fi
+
+      - name: Post regression summary
+        if: failure()
+        run: |
+          if [ -f "benchmark_results/regression_summary.md" ]; then
+            cat benchmark_results/regression_summary.md >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Upload benchmark results
