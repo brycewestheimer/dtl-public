@@ -67,8 +67,9 @@ struct dtl_context_s {
     bool finalize_mpi;
 #endif
 #ifdef DTL_HAS_NCCL
-    void* nccl_comm;  // ncclComm_t (stored as void* to avoid header dep)
-    void* cuda_stream; // cudaStream_t for NCCL operations
+    void* nccl_comm;       // ncclComm_t (stored as void* to avoid header dep)
+    void* cuda_stream;     // cudaStream_t for NCCL operations
+    void* barrier_scratch; // GPU scratch buffer for NCCL barrier
 #endif
     int device_id;
     int determinism_mode;

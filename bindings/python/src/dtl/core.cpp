@@ -200,6 +200,20 @@ public:
         return std::unique_ptr<DTLContext>(new DTLContext(new_ctx));
     }
 
+    /**
+     * @brief Split context creating sub-groups with NCCL communicators
+     * @param color Color for grouping (ranks with same color in same group)
+     * @param key Ordering key within color group
+     * @return New context with split MPI and NCCL communicators
+     * @note Requires both MPI and NCCL domains
+     */
+    std::unique_ptr<DTLContext> split_nccl(int color, int key = 0) const {
+        dtl_context_t new_ctx = nullptr;
+        dtl_status status = dtl_context_split_nccl(ctx_, color, key, &new_ctx);
+        check_status(status);
+        return std::unique_ptr<DTLContext>(new DTLContext(new_ctx));
+    }
+
     // =========================================================================
     // Internal Access
     // =========================================================================
@@ -443,6 +457,23 @@ Note:
 Example:
     >>> nccl_ctx = ctx.with_nccl(device_id=0)
     >>> print(nccl_ctx.has_nccl)  # True
+)doc")
+        .def("split_nccl", &DTLContext::split_nccl,
+             py::arg("color"),
+             py::arg("key") = 0,
+             py::call_guard<py::gil_scoped_release>(),
+             R"doc(
+Split context creating sub-groups with NCCL communicators.
+
+Args:
+    color: Color for grouping (ranks with same color form a group)
+    key: Ordering key within color group (default: 0)
+
+Returns:
+    New Context with split MPI and NCCL communicators.
+
+Note:
+    Requires both MPI and NCCL domains. This is a collective operation.
 )doc")
 
         // Internal access

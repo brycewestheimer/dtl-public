@@ -32,6 +32,7 @@ module dtl_context
 
     ! Context transformations (V1.3.0)
     public :: dtl_context_with_cuda, dtl_context_with_nccl
+    public :: dtl_context_split_nccl
 
     ! Policy queries
     public :: dtl_context_determinism_mode
@@ -208,6 +209,17 @@ module dtl_context
             integer(c_int), value :: device_id
             type(c_ptr), intent(out) :: out
             integer(c_int) :: dtl_context_with_nccl
+        end function
+
+        !> Split context creating sub-groups with NCCL communicators
+        function dtl_context_split_nccl(ctx, color, key, out) &
+                bind(c, name='dtl_context_split_nccl')
+            import :: c_ptr, c_int
+            type(c_ptr), value :: ctx
+            integer(c_int), value :: color
+            integer(c_int), value :: key
+            type(c_ptr), intent(out) :: out
+            integer(c_int) :: dtl_context_split_nccl
         end function
 
         ! ------------------------------------------------------------------

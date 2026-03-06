@@ -60,7 +60,14 @@ endif()
 
 # CUDA support
 if(DTL_ENABLE_CUDA)
-    target_compile_definitions(dtl_c PRIVATE DTL_ENABLE_CUDA=1)
+    target_compile_definitions(dtl_c PRIVATE DTL_ENABLE_CUDA=1 DTL_HAS_CUDA=1)
+    target_link_libraries(dtl_c PRIVATE CUDA::cudart)
+endif()
+
+# NCCL support
+if(DTL_ENABLE_NCCL)
+    target_compile_definitions(dtl_c PRIVATE DTL_HAS_NCCL=1 DTL_HAS_CUDA=1)
+    target_link_libraries(dtl_c PRIVATE NCCL::NCCL CUDA::cudart)
 endif()
 
 # HIP support
@@ -87,6 +94,14 @@ if(DTL_BUILD_C_STATIC)
     if(DTL_MPI_AVAILABLE)
         target_link_libraries(dtl_c_static PRIVATE MPI::MPI_CXX)
         target_compile_definitions(dtl_c_static PRIVATE DTL_HAS_MPI)
+    endif()
+    if(DTL_ENABLE_CUDA)
+        target_compile_definitions(dtl_c_static PRIVATE DTL_ENABLE_CUDA=1 DTL_HAS_CUDA=1)
+        target_link_libraries(dtl_c_static PRIVATE CUDA::cudart)
+    endif()
+    if(DTL_ENABLE_NCCL)
+        target_compile_definitions(dtl_c_static PRIVATE DTL_HAS_NCCL=1 DTL_HAS_CUDA=1)
+        target_link_libraries(dtl_c_static PRIVATE NCCL::NCCL CUDA::cudart)
     endif()
 endif()
 

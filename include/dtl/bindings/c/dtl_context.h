@@ -344,6 +344,29 @@ DTL_API dtl_status dtl_context_with_cuda(dtl_context_t ctx, int device_id,
 DTL_API dtl_status dtl_context_with_nccl(dtl_context_t ctx, int device_id,
                                            dtl_context_t* out);
 
+/**
+ * @brief Split context creating sub-groups with NCCL communicators
+ *
+ * Creates a new context with both a split MPI communicator and a new
+ * NCCL communicator for the sub-group. Ranks with the same color will
+ * be in the same group.
+ *
+ * @param[in] ctx Source context (must have both MPI and NCCL domains)
+ * @param[in] color Color for grouping (ranks with same color in same group)
+ * @param[in] key Ordering key within color group
+ * @param[out] out Pointer to receive the new context handle
+ * @return DTL_SUCCESS on success, error code otherwise
+ *
+ * @pre ctx must be a valid context with MPI and NCCL domains
+ * @pre out must not be NULL
+ * @post On success, *out contains a new context with MPI and NCCL domains
+ * @note This is a collective operation - all ranks must call
+ * @since 0.1.0
+ */
+DTL_API dtl_status dtl_context_split_nccl(dtl_context_t ctx,
+                                            int color, int key,
+                                            dtl_context_t* out);
+
 DTL_C_END
 
 #endif /* DTL_CONTEXT_H */

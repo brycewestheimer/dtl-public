@@ -90,6 +90,77 @@ static dtl_status convert_size_array_to_int(const dtl_size_t* in,
 
 #endif  // DTL_HAS_MPI
 
+// ============================================================================
+// NCCL Datatype/Op Mapping and Dispatch Helpers
+// ============================================================================
+
+#ifdef DTL_HAS_NCCL
+#include <nccl.h>
+#include <cuda_runtime.h>
+
+static ncclDataType_t dtype_to_nccl(dtl_dtype dtype) {
+    switch (dtype) {
+        case DTL_DTYPE_INT8:    return ncclInt8;
+        case DTL_DTYPE_INT32:   return ncclInt32;
+        case DTL_DTYPE_INT64:   return ncclInt64;
+        case DTL_DTYPE_UINT8:   return ncclUint8;
+        case DTL_DTYPE_UINT32:  return ncclUint32;
+        case DTL_DTYPE_UINT64:  return ncclUint64;
+        case DTL_DTYPE_FLOAT32: return ncclFloat32;
+        case DTL_DTYPE_FLOAT64: return ncclFloat64;
+        case DTL_DTYPE_BOOL:    return ncclUint8;
+        default:                return static_cast<ncclDataType_t>(-1);
+    }
+}
+
+static ncclRedOp_t reduce_op_to_nccl(dtl_reduce_op op) {
+    switch (op) {
+        case DTL_OP_SUM:  return ncclSum;
+        case DTL_OP_PROD: return ncclProd;
+        case DTL_OP_MIN:  return ncclMin;
+        case DTL_OP_MAX:  return ncclMax;
+        default:          return static_cast<ncclRedOp_t>(-1);
+    }
+}
+
+static bool nccl_supports_dtype(dtl_dtype dtype) {
+    return dtype != DTL_DTYPE_INT16 && dtype != DTL_DTYPE_UINT16
+        && dtype != DTL_DTYPE_BYTE
+        && dtype_to_nccl(dtype) != static_cast<ncclDataType_t>(-1);
+}
+
+static bool nccl_supports_reduce_op(dtl_reduce_op op) {
+    return op == DTL_OP_SUM || op == DTL_OP_PROD
+        || op == DTL_OP_MIN || op == DTL_OP_MAX;
+}
+
+static bool use_nccl(dtl_context_t ctx) {
+    return (ctx->domain_flags & dtl_context_s::HAS_NCCL)
+        && ctx->nccl_comm != nullptr;
+}
+
+static dtl_status nccl_stream_sync(dtl_context_t ctx) {
+    cudaError_t err = cudaStreamSynchronize(
+        static_cast<cudaStream_t>(ctx->cuda_stream));
+    return (err == cudaSuccess) ? DTL_SUCCESS : DTL_ERROR_COMMUNICATION;
+}
+
+static size_t nccl_dtype_size(dtl_dtype dtype) {
+    switch (dtype) {
+        case DTL_DTYPE_INT8:
+        case DTL_DTYPE_UINT8:
+        case DTL_DTYPE_BOOL:    return 1;
+        case DTL_DTYPE_INT32:
+        case DTL_DTYPE_UINT32:
+        case DTL_DTYPE_FLOAT32: return 4;
+        case DTL_DTYPE_INT64:
+        case DTL_DTYPE_UINT64:
+        case DTL_DTYPE_FLOAT64: return 8;
+        default:                return 0;
+    }
+}
+#endif  // DTL_HAS_NCCL
+
 // Validation helpers defined in dtl_internal.hpp
 
 // ============================================================================
@@ -107,6 +178,23 @@ dtl_status dtl_send(dtl_context_t ctx, const void* buf,
     if (!buf && count > 0) {
         return DTL_ERROR_NULL_POINTER;
     }
+
+#ifdef DTL_HAS_NCCL
+    if (use_nccl(ctx) && nccl_supports_dtype(dtype)) {
+        ncclDataType_t nccl_type = dtype_to_nccl(dtype);
+        ncclComm_t comm = static_cast<ncclComm_t>(ctx->nccl_comm);
+        cudaStream_t stream = static_cast<cudaStream_t>(ctx->cuda_stream);
+        ncclResult_t nccl_err;
+        nccl_err = ncclGroupStart();
+        if (nccl_err != ncclSuccess) return DTL_ERROR_SEND_FAILED;
+        nccl_err = ncclSend(buf, count, nccl_type, dest, comm, stream);
+        if (nccl_err != ncclSuccess) { ncclGroupEnd(); return DTL_ERROR_SEND_FAILED; }
+        nccl_err = ncclGroupEnd();
+        if (nccl_err != ncclSuccess) return DTL_ERROR_SEND_FAILED;
+        (void)tag;
+        return nccl_stream_sync(ctx);
+    }
+#endif
 
 #ifdef DTL_HAS_MPI
     MPI_Datatype mpi_type = dtype_to_mpi(dtype);
@@ -143,6 +231,24 @@ dtl_status dtl_recv(dtl_context_t ctx, void* buf,
     if (!buf && count > 0) {
         return DTL_ERROR_NULL_POINTER;
     }
+
+#ifdef DTL_HAS_NCCL
+    if (use_nccl(ctx) && nccl_supports_dtype(dtype)
+        && source != DTL_ANY_SOURCE) {
+        ncclDataType_t nccl_type = dtype_to_nccl(dtype);
+        ncclComm_t comm = static_cast<ncclComm_t>(ctx->nccl_comm);
+        cudaStream_t stream = static_cast<cudaStream_t>(ctx->cuda_stream);
+        ncclResult_t nccl_err;
+        nccl_err = ncclGroupStart();
+        if (nccl_err != ncclSuccess) return DTL_ERROR_RECV_FAILED;
+        nccl_err = ncclRecv(buf, count, nccl_type, source, comm, stream);
+        if (nccl_err != ncclSuccess) { ncclGroupEnd(); return DTL_ERROR_RECV_FAILED; }
+        nccl_err = ncclGroupEnd();
+        if (nccl_err != ncclSuccess) return DTL_ERROR_RECV_FAILED;
+        (void)tag;
+        return nccl_stream_sync(ctx);
+    }
+#endif
 
 #ifdef DTL_HAS_MPI
     MPI_Datatype mpi_type = dtype_to_mpi(dtype);
@@ -509,6 +615,17 @@ dtl_status dtl_barrier(dtl_context_t ctx) {
         return DTL_ERROR_INVALID_ARGUMENT;
     }
 
+#ifdef DTL_HAS_NCCL
+    if (use_nccl(ctx) && ctx->barrier_scratch != nullptr) {
+        ncclResult_t nccl_err = ncclAllReduce(
+            ctx->barrier_scratch, ctx->barrier_scratch, 1, ncclInt32, ncclSum,
+            static_cast<ncclComm_t>(ctx->nccl_comm),
+            static_cast<cudaStream_t>(ctx->cuda_stream));
+        if (nccl_err != ncclSuccess) return DTL_ERROR_BARRIER_FAILED;
+        return nccl_stream_sync(ctx);
+    }
+#endif
+
 #ifdef DTL_HAS_MPI
     int err = MPI_Barrier(ctx->comm);
     if (err != MPI_SUCCESS) {
@@ -533,6 +650,18 @@ dtl_status dtl_broadcast(dtl_context_t ctx, void* buf,
     if (!buf && count > 0) {
         return DTL_ERROR_NULL_POINTER;
     }
+
+#ifdef DTL_HAS_NCCL
+    if (use_nccl(ctx) && nccl_supports_dtype(dtype)) {
+        ncclDataType_t nccl_type = dtype_to_nccl(dtype);
+        ncclResult_t nccl_err = ncclBroadcast(
+            buf, buf, count, nccl_type, root,
+            static_cast<ncclComm_t>(ctx->nccl_comm),
+            static_cast<cudaStream_t>(ctx->cuda_stream));
+        if (nccl_err != ncclSuccess) return DTL_ERROR_BROADCAST_FAILED;
+        return nccl_stream_sync(ctx);
+    }
+#endif
 
 #ifdef DTL_HAS_MPI
     MPI_Datatype mpi_type = dtype_to_mpi(dtype);
@@ -574,6 +703,19 @@ dtl_status dtl_reduce(dtl_context_t ctx,
         return DTL_ERROR_NULL_POINTER;
     }
 
+#ifdef DTL_HAS_NCCL
+    if (use_nccl(ctx) && nccl_supports_dtype(dtype) && nccl_supports_reduce_op(op)) {
+        ncclDataType_t nccl_type = dtype_to_nccl(dtype);
+        ncclRedOp_t nccl_op = reduce_op_to_nccl(op);
+        ncclResult_t nccl_err = ncclReduce(
+            sendbuf, recvbuf, count, nccl_type, nccl_op, root,
+            static_cast<ncclComm_t>(ctx->nccl_comm),
+            static_cast<cudaStream_t>(ctx->cuda_stream));
+        if (nccl_err != ncclSuccess) return DTL_ERROR_REDUCE_FAILED;
+        return nccl_stream_sync(ctx);
+    }
+#endif
+
 #ifdef DTL_HAS_MPI
     MPI_Datatype mpi_type = dtype_to_mpi(dtype);
     MPI_Op mpi_op = reduce_op_to_mpi(op);
@@ -612,6 +754,19 @@ dtl_status dtl_allreduce(dtl_context_t ctx,
     if ((!sendbuf || !recvbuf) && count > 0) {
         return DTL_ERROR_NULL_POINTER;
     }
+
+#ifdef DTL_HAS_NCCL
+    if (use_nccl(ctx) && nccl_supports_dtype(dtype) && nccl_supports_reduce_op(op)) {
+        ncclDataType_t nccl_type = dtype_to_nccl(dtype);
+        ncclRedOp_t nccl_op = reduce_op_to_nccl(op);
+        ncclResult_t nccl_err = ncclAllReduce(
+            sendbuf, recvbuf, count, nccl_type, nccl_op,
+            static_cast<ncclComm_t>(ctx->nccl_comm),
+            static_cast<cudaStream_t>(ctx->cuda_stream));
+        if (nccl_err != ncclSuccess) return DTL_ERROR_REDUCE_FAILED;
+        return nccl_stream_sync(ctx);
+    }
+#endif
 
 #ifdef DTL_HAS_MPI
     MPI_Datatype mpi_type = dtype_to_mpi(dtype);
@@ -652,6 +807,33 @@ dtl_status dtl_gather(dtl_context_t ctx,
     if (!is_valid_context(ctx)) {
         return DTL_ERROR_INVALID_ARGUMENT;
     }
+
+#ifdef DTL_HAS_NCCL
+    if (use_nccl(ctx) && nccl_supports_dtype(senddtype)) {
+        ncclDataType_t nccl_type = dtype_to_nccl(senddtype);
+        size_t elem_size = nccl_dtype_size(senddtype);
+        ncclComm_t comm = static_cast<ncclComm_t>(ctx->nccl_comm);
+        cudaStream_t stream = static_cast<cudaStream_t>(ctx->cuda_stream);
+        ncclResult_t nccl_err;
+        nccl_err = ncclGroupStart();
+        if (nccl_err != ncclSuccess) return DTL_ERROR_COLLECTIVE_FAILED;
+        // All ranks send to root
+        nccl_err = ncclSend(sendbuf, sendcount, nccl_type, root, comm, stream);
+        if (nccl_err != ncclSuccess) { ncclGroupEnd(); return DTL_ERROR_COLLECTIVE_FAILED; }
+        // Root receives from all ranks
+        if (ctx->rank == root) {
+            for (int i = 0; i < ctx->size; ++i) {
+                char* dst = static_cast<char*>(recvbuf) + static_cast<size_t>(i) * recvcount * elem_size;
+                nccl_err = ncclRecv(dst, recvcount, nccl_type, i, comm, stream);
+                if (nccl_err != ncclSuccess) { ncclGroupEnd(); return DTL_ERROR_COLLECTIVE_FAILED; }
+            }
+        }
+        nccl_err = ncclGroupEnd();
+        if (nccl_err != ncclSuccess) return DTL_ERROR_COLLECTIVE_FAILED;
+        (void)recvdtype;
+        return nccl_stream_sync(ctx);
+    }
+#endif
 
 #ifdef DTL_HAS_MPI
     MPI_Datatype send_type = dtype_to_mpi(senddtype);
@@ -697,6 +879,20 @@ dtl_status dtl_allgather(dtl_context_t ctx,
         return DTL_ERROR_INVALID_ARGUMENT;
     }
 
+#ifdef DTL_HAS_NCCL
+    if (use_nccl(ctx) && nccl_supports_dtype(senddtype)) {
+        ncclDataType_t nccl_type = dtype_to_nccl(senddtype);
+        ncclResult_t nccl_err = ncclAllGather(
+            sendbuf, recvbuf, sendcount, nccl_type,
+            static_cast<ncclComm_t>(ctx->nccl_comm),
+            static_cast<cudaStream_t>(ctx->cuda_stream));
+        if (nccl_err != ncclSuccess) return DTL_ERROR_COLLECTIVE_FAILED;
+        (void)recvcount;
+        (void)recvdtype;
+        return nccl_stream_sync(ctx);
+    }
+#endif
+
 #ifdef DTL_HAS_MPI
     MPI_Datatype send_type = dtype_to_mpi(senddtype);
     MPI_Datatype recv_type = dtype_to_mpi(recvdtype);
@@ -739,6 +935,33 @@ dtl_status dtl_scatter(dtl_context_t ctx,
     if (!is_valid_context(ctx)) {
         return DTL_ERROR_INVALID_ARGUMENT;
     }
+
+#ifdef DTL_HAS_NCCL
+    if (use_nccl(ctx) && nccl_supports_dtype(senddtype)) {
+        ncclDataType_t nccl_type = dtype_to_nccl(senddtype);
+        size_t elem_size = nccl_dtype_size(senddtype);
+        ncclComm_t comm = static_cast<ncclComm_t>(ctx->nccl_comm);
+        cudaStream_t stream = static_cast<cudaStream_t>(ctx->cuda_stream);
+        ncclResult_t nccl_err;
+        nccl_err = ncclGroupStart();
+        if (nccl_err != ncclSuccess) return DTL_ERROR_COLLECTIVE_FAILED;
+        // Root sends to all ranks
+        if (ctx->rank == root) {
+            for (int i = 0; i < ctx->size; ++i) {
+                const char* src = static_cast<const char*>(sendbuf) + static_cast<size_t>(i) * sendcount * elem_size;
+                nccl_err = ncclSend(src, sendcount, nccl_type, i, comm, stream);
+                if (nccl_err != ncclSuccess) { ncclGroupEnd(); return DTL_ERROR_COLLECTIVE_FAILED; }
+            }
+        }
+        // All ranks receive from root
+        nccl_err = ncclRecv(recvbuf, recvcount, nccl_type, root, comm, stream);
+        if (nccl_err != ncclSuccess) { ncclGroupEnd(); return DTL_ERROR_COLLECTIVE_FAILED; }
+        nccl_err = ncclGroupEnd();
+        if (nccl_err != ncclSuccess) return DTL_ERROR_COLLECTIVE_FAILED;
+        (void)recvdtype;
+        return nccl_stream_sync(ctx);
+    }
+#endif
 
 #ifdef DTL_HAS_MPI
     MPI_Datatype send_type = dtype_to_mpi(senddtype);
@@ -783,6 +1006,30 @@ dtl_status dtl_alltoall(dtl_context_t ctx,
     if (!is_valid_context(ctx)) {
         return DTL_ERROR_INVALID_ARGUMENT;
     }
+
+#ifdef DTL_HAS_NCCL
+    if (use_nccl(ctx) && nccl_supports_dtype(senddtype)) {
+        ncclDataType_t nccl_type = dtype_to_nccl(senddtype);
+        size_t elem_size = nccl_dtype_size(senddtype);
+        ncclComm_t comm = static_cast<ncclComm_t>(ctx->nccl_comm);
+        cudaStream_t stream = static_cast<cudaStream_t>(ctx->cuda_stream);
+        ncclResult_t nccl_err;
+        nccl_err = ncclGroupStart();
+        if (nccl_err != ncclSuccess) return DTL_ERROR_COLLECTIVE_FAILED;
+        for (int i = 0; i < ctx->size; ++i) {
+            const char* src = static_cast<const char*>(sendbuf) + static_cast<size_t>(i) * sendcount * elem_size;
+            char* dst = static_cast<char*>(recvbuf) + static_cast<size_t>(i) * recvcount * elem_size;
+            nccl_err = ncclSend(src, sendcount, nccl_type, i, comm, stream);
+            if (nccl_err != ncclSuccess) { ncclGroupEnd(); return DTL_ERROR_COLLECTIVE_FAILED; }
+            nccl_err = ncclRecv(dst, recvcount, nccl_type, i, comm, stream);
+            if (nccl_err != ncclSuccess) { ncclGroupEnd(); return DTL_ERROR_COLLECTIVE_FAILED; }
+        }
+        nccl_err = ncclGroupEnd();
+        if (nccl_err != ncclSuccess) return DTL_ERROR_COLLECTIVE_FAILED;
+        (void)recvdtype;
+        return nccl_stream_sync(ctx);
+    }
+#endif
 
 #ifdef DTL_HAS_MPI
     MPI_Datatype send_type = dtype_to_mpi(senddtype);
@@ -831,6 +1078,33 @@ dtl_status dtl_gatherv(dtl_context_t ctx,
     if (!is_valid_context(ctx)) {
         return DTL_ERROR_INVALID_ARGUMENT;
     }
+
+#ifdef DTL_HAS_NCCL
+    if (use_nccl(ctx) && nccl_supports_dtype(senddtype)) {
+        ncclDataType_t nccl_type = dtype_to_nccl(senddtype);
+        size_t elem_size = nccl_dtype_size(senddtype);
+        ncclComm_t comm = static_cast<ncclComm_t>(ctx->nccl_comm);
+        cudaStream_t stream = static_cast<cudaStream_t>(ctx->cuda_stream);
+        ncclResult_t nccl_err;
+        nccl_err = ncclGroupStart();
+        if (nccl_err != ncclSuccess) return DTL_ERROR_COLLECTIVE_FAILED;
+        // All ranks send to root
+        nccl_err = ncclSend(sendbuf, sendcount, nccl_type, root, comm, stream);
+        if (nccl_err != ncclSuccess) { ncclGroupEnd(); return DTL_ERROR_COLLECTIVE_FAILED; }
+        // Root receives from all ranks with variable counts
+        if (ctx->rank == root && recvcounts && displs) {
+            for (int i = 0; i < ctx->size; ++i) {
+                char* dst = static_cast<char*>(recvbuf) + displs[i] * elem_size;
+                nccl_err = ncclRecv(dst, recvcounts[i], nccl_type, i, comm, stream);
+                if (nccl_err != ncclSuccess) { ncclGroupEnd(); return DTL_ERROR_COLLECTIVE_FAILED; }
+            }
+        }
+        nccl_err = ncclGroupEnd();
+        if (nccl_err != ncclSuccess) return DTL_ERROR_COLLECTIVE_FAILED;
+        (void)recvdtype;
+        return nccl_stream_sync(ctx);
+    }
+#endif
 
 #ifdef DTL_HAS_MPI
     MPI_Datatype send_type = dtype_to_mpi(senddtype);
@@ -888,6 +1162,33 @@ dtl_status dtl_scatterv(dtl_context_t ctx,
     if (!is_valid_context(ctx)) {
         return DTL_ERROR_INVALID_ARGUMENT;
     }
+
+#ifdef DTL_HAS_NCCL
+    if (use_nccl(ctx) && nccl_supports_dtype(senddtype)) {
+        ncclDataType_t nccl_type = dtype_to_nccl(senddtype);
+        size_t elem_size = nccl_dtype_size(senddtype);
+        ncclComm_t comm = static_cast<ncclComm_t>(ctx->nccl_comm);
+        cudaStream_t stream = static_cast<cudaStream_t>(ctx->cuda_stream);
+        ncclResult_t nccl_err;
+        nccl_err = ncclGroupStart();
+        if (nccl_err != ncclSuccess) return DTL_ERROR_COLLECTIVE_FAILED;
+        // Root sends to all ranks with variable counts
+        if (ctx->rank == root && sendcounts && displs) {
+            for (int i = 0; i < ctx->size; ++i) {
+                const char* src = static_cast<const char*>(sendbuf) + displs[i] * elem_size;
+                nccl_err = ncclSend(src, sendcounts[i], nccl_type, i, comm, stream);
+                if (nccl_err != ncclSuccess) { ncclGroupEnd(); return DTL_ERROR_COLLECTIVE_FAILED; }
+            }
+        }
+        // All ranks receive from root
+        nccl_err = ncclRecv(recvbuf, recvcount, nccl_type, root, comm, stream);
+        if (nccl_err != ncclSuccess) { ncclGroupEnd(); return DTL_ERROR_COLLECTIVE_FAILED; }
+        nccl_err = ncclGroupEnd();
+        if (nccl_err != ncclSuccess) return DTL_ERROR_COLLECTIVE_FAILED;
+        (void)recvdtype;
+        return nccl_stream_sync(ctx);
+    }
+#endif
 
 #ifdef DTL_HAS_MPI
     MPI_Datatype send_type = dtype_to_mpi(senddtype);
@@ -951,6 +1252,32 @@ dtl_status dtl_allgatherv(dtl_context_t ctx,
         return DTL_ERROR_INVALID_ARGUMENT;
     }
 
+#ifdef DTL_HAS_NCCL
+    if (use_nccl(ctx) && nccl_supports_dtype(dtype) && recvcounts && displs) {
+        ncclDataType_t nccl_type = dtype_to_nccl(dtype);
+        size_t elem_size = nccl_dtype_size(dtype);
+        ncclComm_t comm = static_cast<ncclComm_t>(ctx->nccl_comm);
+        cudaStream_t stream = static_cast<cudaStream_t>(ctx->cuda_stream);
+        ncclResult_t nccl_err;
+        nccl_err = ncclGroupStart();
+        if (nccl_err != ncclSuccess) return DTL_ERROR_COLLECTIVE_FAILED;
+        // Send own data to all ranks
+        for (int i = 0; i < ctx->size; ++i) {
+            nccl_err = ncclSend(sendbuf, sendcount, nccl_type, i, comm, stream);
+            if (nccl_err != ncclSuccess) { ncclGroupEnd(); return DTL_ERROR_COLLECTIVE_FAILED; }
+        }
+        // Receive from all ranks at variable offsets
+        for (int i = 0; i < ctx->size; ++i) {
+            char* dst = static_cast<char*>(recvbuf) + displs[i] * elem_size;
+            nccl_err = ncclRecv(dst, recvcounts[i], nccl_type, i, comm, stream);
+            if (nccl_err != ncclSuccess) { ncclGroupEnd(); return DTL_ERROR_COLLECTIVE_FAILED; }
+        }
+        nccl_err = ncclGroupEnd();
+        if (nccl_err != ncclSuccess) return DTL_ERROR_COLLECTIVE_FAILED;
+        return nccl_stream_sync(ctx);
+    }
+#endif
+
 #ifdef DTL_HAS_MPI
     MPI_Datatype mpi_type = dtype_to_mpi(dtype);
     if (mpi_type == MPI_DATATYPE_NULL) {
@@ -1007,6 +1334,32 @@ dtl_status dtl_alltoallv(dtl_context_t ctx,
     if (!is_valid_context(ctx)) {
         return DTL_ERROR_INVALID_ARGUMENT;
     }
+
+#ifdef DTL_HAS_NCCL
+    if (use_nccl(ctx) && nccl_supports_dtype(senddtype)
+        && sendcounts && sdispls && recvcounts && rdispls) {
+        ncclDataType_t nccl_type = dtype_to_nccl(senddtype);
+        size_t send_elem_size = nccl_dtype_size(senddtype);
+        size_t recv_elem_size = nccl_dtype_size(senddtype);  // same type for NCCL path
+        ncclComm_t comm = static_cast<ncclComm_t>(ctx->nccl_comm);
+        cudaStream_t stream = static_cast<cudaStream_t>(ctx->cuda_stream);
+        ncclResult_t nccl_err;
+        nccl_err = ncclGroupStart();
+        if (nccl_err != ncclSuccess) return DTL_ERROR_COLLECTIVE_FAILED;
+        for (int i = 0; i < ctx->size; ++i) {
+            const char* src = static_cast<const char*>(sendbuf) + sdispls[i] * send_elem_size;
+            char* dst = static_cast<char*>(recvbuf) + rdispls[i] * recv_elem_size;
+            nccl_err = ncclSend(src, sendcounts[i], nccl_type, i, comm, stream);
+            if (nccl_err != ncclSuccess) { ncclGroupEnd(); return DTL_ERROR_COLLECTIVE_FAILED; }
+            nccl_err = ncclRecv(dst, recvcounts[i], nccl_type, i, comm, stream);
+            if (nccl_err != ncclSuccess) { ncclGroupEnd(); return DTL_ERROR_COLLECTIVE_FAILED; }
+        }
+        nccl_err = ncclGroupEnd();
+        if (nccl_err != ncclSuccess) return DTL_ERROR_COLLECTIVE_FAILED;
+        (void)recvdtype;
+        return nccl_stream_sync(ctx);
+    }
+#endif
 
 #ifdef DTL_HAS_MPI
     MPI_Datatype send_type = dtype_to_mpi(senddtype);
