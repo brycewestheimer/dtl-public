@@ -22,10 +22,16 @@
 #include <dtl/bindings/c/dtl_policies.h>
 #include <dtl/bindings/c/dtl_context.h>
 
+#include "placement_mapping.hpp"
+
 #include <algorithm>
 #include <cstring>
 #include <new>
 #include <vector>
+
+#if DTL_ENABLE_CUDA
+#include <cuda_runtime.h>
+#endif
 
 namespace dtl::c::detail {
 
@@ -425,6 +431,619 @@ const vector_vtable* get_host_vector_vtable() noexcept {
 }
 
 // ============================================================================
+// CUDA Device Vector Implementation
+// ============================================================================
+
+#if DTL_ENABLE_CUDA
+
+/**
+ * @brief Concrete vector implementation for CUDA device placement
+ * @tparam T Element type (must be trivially_copyable)
+ *
+ * Stores data in CUDA device memory allocated via cudaMalloc.
+ * Host access is not available — local_data() returns nullptr.
+ * Use copy_to_host/copy_from_host for data transfer.
+ */
+template <typename T>
+class device_vector_impl {
+public:
+    device_vector_impl(std::size_t global_size, dtl_rank_t rank, dtl_rank_t num_ranks,
+                       dtl_partition_policy partition, int device_id,
+                       std::size_t block_size = 1)
+        : global_size_(global_size)
+        , rank_(rank)
+        , num_ranks_(num_ranks)
+        , partition_(partition)
+        , block_size_(block_size)
+        , device_id_(device_id)
+        , device_ptr_(nullptr) {
+
+        compute_local_partition();
+
+        if (device_id_ >= 0) cudaSetDevice(device_id_);
+        if (local_size_ > 0) {
+            cudaMalloc(&device_ptr_, local_size_ * sizeof(T));
+            cudaMemset(device_ptr_, 0, local_size_ * sizeof(T));
+        }
+    }
+
+    ~device_vector_impl() {
+        if (device_ptr_) {
+            if (device_id_ >= 0) cudaSetDevice(device_id_);
+            cudaFree(device_ptr_);
+        }
+    }
+
+    device_vector_impl(const device_vector_impl&) = delete;
+    device_vector_impl& operator=(const device_vector_impl&) = delete;
+
+    std::size_t global_size() const noexcept { return global_size_; }
+    std::size_t local_size() const noexcept { return local_size_; }
+    std::ptrdiff_t local_offset() const noexcept { return local_offset_; }
+    dtl_rank_t num_ranks() const noexcept { return num_ranks_; }
+    dtl_rank_t rank() const noexcept { return rank_; }
+
+    // Host data not available for device placement
+    T* host_data() noexcept { return nullptr; }
+    const T* host_data() const noexcept { return nullptr; }
+
+    // Device data
+    T* device_data() noexcept { return device_ptr_; }
+    const T* device_data() const noexcept { return device_ptr_; }
+
+    dtl_status copy_to_host(void* host_buffer, std::size_t count) const {
+        if (device_id_ >= 0) cudaSetDevice(device_id_);
+        if (count > local_size_) count = local_size_;
+        auto err = cudaMemcpy(host_buffer, device_ptr_, count * sizeof(T), cudaMemcpyDeviceToHost);
+        return err == cudaSuccess ? DTL_SUCCESS : DTL_ERROR_UNKNOWN;
+    }
+
+    dtl_status copy_from_host(const void* host_buffer, std::size_t count) {
+        if (device_id_ >= 0) cudaSetDevice(device_id_);
+        if (count > local_size_) count = local_size_;
+        auto err = cudaMemcpy(device_ptr_, host_buffer, count * sizeof(T), cudaMemcpyHostToDevice);
+        return err == cudaSuccess ? DTL_SUCCESS : DTL_ERROR_UNKNOWN;
+    }
+
+    dtl_status resize(std::size_t new_global_size) {
+        if (device_id_ >= 0) cudaSetDevice(device_id_);
+        T* old_ptr = device_ptr_;
+        std::size_t old_local = local_size_;
+
+        global_size_ = new_global_size;
+        compute_local_partition();
+
+        device_ptr_ = nullptr;
+        if (local_size_ > 0) {
+            auto err = cudaMalloc(&device_ptr_, local_size_ * sizeof(T));
+            if (err != cudaSuccess) {
+                device_ptr_ = old_ptr;
+                return DTL_ERROR_ALLOCATION_FAILED;
+            }
+            // Copy preserved elements
+            std::size_t copy_count = std::min(old_local, local_size_);
+            if (copy_count > 0 && old_ptr) {
+                cudaMemcpy(device_ptr_, old_ptr, copy_count * sizeof(T), cudaMemcpyDeviceToDevice);
+            }
+            // Zero-fill any new elements
+            if (local_size_ > copy_count) {
+                cudaMemset(static_cast<char*>(static_cast<void*>(device_ptr_)) + copy_count * sizeof(T),
+                           0, (local_size_ - copy_count) * sizeof(T));
+            }
+        }
+        if (old_ptr) cudaFree(old_ptr);
+        return DTL_SUCCESS;
+    }
+
+    dtl_status fill(const T& value) {
+        if (local_size_ == 0) return DTL_SUCCESS;
+        if (device_id_ >= 0) cudaSetDevice(device_id_);
+        // Fill via host staging buffer
+        std::vector<T> staging(local_size_, value);
+        auto err = cudaMemcpy(device_ptr_, staging.data(), local_size_ * sizeof(T), cudaMemcpyHostToDevice);
+        return err == cudaSuccess ? DTL_SUCCESS : DTL_ERROR_UNKNOWN;
+    }
+
+    T reduce_sum() const {
+        if (local_size_ == 0) return T{};
+        std::vector<T> staging(local_size_);
+        copy_to_host(staging.data(), local_size_);
+        T sum{};
+        for (const auto& val : staging) sum = sum + val;
+        return sum;
+    }
+
+    T reduce_min() const {
+        if (local_size_ == 0) return T{};
+        std::vector<T> staging(local_size_);
+        copy_to_host(staging.data(), local_size_);
+        return *std::min_element(staging.begin(), staging.end());
+    }
+
+    T reduce_max() const {
+        if (local_size_ == 0) return T{};
+        std::vector<T> staging(local_size_);
+        copy_to_host(staging.data(), local_size_);
+        return *std::max_element(staging.begin(), staging.end());
+    }
+
+    void sort_ascending() {
+        if (local_size_ <= 1) return;
+        if (device_id_ >= 0) cudaSetDevice(device_id_);
+        std::vector<T> staging(local_size_);
+        copy_to_host(staging.data(), local_size_);
+        std::sort(staging.begin(), staging.end());
+        cudaMemcpy(device_ptr_, staging.data(), local_size_ * sizeof(T), cudaMemcpyHostToDevice);
+    }
+
+    void sort_descending() {
+        if (local_size_ <= 1) return;
+        if (device_id_ >= 0) cudaSetDevice(device_id_);
+        std::vector<T> staging(local_size_);
+        copy_to_host(staging.data(), local_size_);
+        std::sort(staging.begin(), staging.end(), std::greater<T>());
+        cudaMemcpy(device_ptr_, staging.data(), local_size_ * sizeof(T), cudaMemcpyHostToDevice);
+    }
+
+    dtl_rank_t owner(dtl_index_t global_idx) const noexcept {
+        if (global_idx < 0 || static_cast<std::size_t>(global_idx) >= global_size_) {
+            return DTL_NO_RANK;
+        }
+        switch (partition_) {
+            case DTL_PARTITION_BLOCK:   return owner_block(global_idx);
+            case DTL_PARTITION_CYCLIC:  return owner_cyclic(global_idx);
+            case DTL_PARTITION_REPLICATED: return rank_;
+            default: return DTL_NO_RANK;
+        }
+    }
+
+    bool is_local(dtl_index_t global_idx) const noexcept {
+        if (partition_ == DTL_PARTITION_REPLICATED)
+            return global_idx >= 0 && static_cast<std::size_t>(global_idx) < global_size_;
+        return owner(global_idx) == rank_;
+    }
+
+    dtl_index_t to_local(dtl_index_t global_idx) const noexcept {
+        if (!is_local(global_idx)) return -1;
+        switch (partition_) {
+            case DTL_PARTITION_BLOCK:      return global_idx - local_offset_;
+            case DTL_PARTITION_CYCLIC:     return global_idx / num_ranks_;
+            case DTL_PARTITION_REPLICATED: return global_idx;
+            default: return -1;
+        }
+    }
+
+    dtl_index_t to_global(dtl_index_t local_idx) const noexcept {
+        if (local_idx < 0 || static_cast<std::size_t>(local_idx) >= local_size_) return -1;
+        switch (partition_) {
+            case DTL_PARTITION_BLOCK:      return local_offset_ + local_idx;
+            case DTL_PARTITION_CYCLIC:     return local_idx * num_ranks_ + rank_;
+            case DTL_PARTITION_REPLICATED: return local_idx;
+            default: return -1;
+        }
+    }
+
+private:
+    void compute_local_partition() {
+        switch (partition_) {
+            case DTL_PARTITION_BLOCK: {
+                std::size_t base = global_size_ / num_ranks_;
+                std::size_t remainder = global_size_ % num_ranks_;
+                if (static_cast<std::size_t>(rank_) < remainder) {
+                    local_size_ = base + 1;
+                    local_offset_ = rank_ * (base + 1);
+                } else {
+                    local_size_ = base;
+                    local_offset_ = remainder * (base + 1) + (rank_ - remainder) * base;
+                }
+                break;
+            }
+            case DTL_PARTITION_CYCLIC: {
+                std::size_t base = global_size_ / num_ranks_;
+                std::size_t remainder = global_size_ % num_ranks_;
+                local_size_ = base + (static_cast<std::size_t>(rank_) < remainder ? 1 : 0);
+                local_offset_ = rank_;
+                break;
+            }
+            case DTL_PARTITION_REPLICATED:
+                local_size_ = global_size_;
+                local_offset_ = 0;
+                break;
+            default:
+                local_size_ = 0;
+                local_offset_ = 0;
+                break;
+        }
+    }
+
+    dtl_rank_t owner_block(dtl_index_t global_idx) const noexcept {
+        std::size_t base = global_size_ / num_ranks_;
+        std::size_t remainder = global_size_ % num_ranks_;
+        std::size_t boundary = remainder * (base + 1);
+        if (static_cast<std::size_t>(global_idx) < boundary)
+            return static_cast<dtl_rank_t>(global_idx / (base + 1));
+        return static_cast<dtl_rank_t>(remainder + (global_idx - boundary) / base);
+    }
+
+    dtl_rank_t owner_cyclic(dtl_index_t global_idx) const noexcept {
+        return static_cast<dtl_rank_t>(global_idx % num_ranks_);
+    }
+
+    std::size_t global_size_;
+    std::size_t local_size_ = 0;
+    std::ptrdiff_t local_offset_ = 0;
+    dtl_rank_t rank_;
+    dtl_rank_t num_ranks_;
+    dtl_partition_policy partition_;
+    std::size_t block_size_;
+    int device_id_;
+    T* device_ptr_;
+};
+
+// ============================================================================
+// CUDA Unified Memory Vector Implementation
+// ============================================================================
+
+/**
+ * @brief Concrete vector implementation for CUDA unified memory placement
+ * @tparam T Element type (must be trivially_copyable)
+ *
+ * Stores data in CUDA managed memory (cudaMallocManaged).
+ * Host-accessible: local_data() returns valid managed pointer.
+ * Device-accessible: device_data() returns same managed pointer.
+ */
+template <typename T>
+class unified_vector_impl {
+public:
+    unified_vector_impl(std::size_t global_size, dtl_rank_t rank, dtl_rank_t num_ranks,
+                        dtl_partition_policy partition, int device_id,
+                        std::size_t block_size = 1)
+        : global_size_(global_size)
+        , rank_(rank)
+        , num_ranks_(num_ranks)
+        , partition_(partition)
+        , block_size_(block_size)
+        , device_id_(device_id)
+        , managed_ptr_(nullptr) {
+
+        compute_local_partition();
+
+        if (device_id_ >= 0) cudaSetDevice(device_id_);
+        if (local_size_ > 0) {
+            cudaMallocManaged(&managed_ptr_, local_size_ * sizeof(T));
+            std::memset(managed_ptr_, 0, local_size_ * sizeof(T));
+        }
+    }
+
+    ~unified_vector_impl() {
+        if (managed_ptr_) {
+            if (device_id_ >= 0) cudaSetDevice(device_id_);
+            cudaFree(managed_ptr_);
+        }
+    }
+
+    unified_vector_impl(const unified_vector_impl&) = delete;
+    unified_vector_impl& operator=(const unified_vector_impl&) = delete;
+
+    std::size_t global_size() const noexcept { return global_size_; }
+    std::size_t local_size() const noexcept { return local_size_; }
+    std::ptrdiff_t local_offset() const noexcept { return local_offset_; }
+    dtl_rank_t num_ranks() const noexcept { return num_ranks_; }
+    dtl_rank_t rank() const noexcept { return rank_; }
+
+    // Host-accessible (managed memory)
+    T* data() noexcept { return managed_ptr_; }
+    const T* data() const noexcept { return managed_ptr_; }
+
+    // Device-accessible (same managed pointer)
+    T* device_data() noexcept { return managed_ptr_; }
+    const T* device_data() const noexcept { return managed_ptr_; }
+
+    dtl_status copy_to_host(void* host_buffer, std::size_t count) const {
+        if (count > local_size_) count = local_size_;
+        // Managed memory is host-accessible, sync then memcpy
+        if (device_id_ >= 0) cudaDeviceSynchronize();
+        std::memcpy(host_buffer, managed_ptr_, count * sizeof(T));
+        return DTL_SUCCESS;
+    }
+
+    dtl_status copy_from_host(const void* host_buffer, std::size_t count) {
+        if (count > local_size_) count = local_size_;
+        std::memcpy(managed_ptr_, host_buffer, count * sizeof(T));
+        return DTL_SUCCESS;
+    }
+
+    dtl_status resize(std::size_t new_global_size) {
+        if (device_id_ >= 0) cudaSetDevice(device_id_);
+        T* old_ptr = managed_ptr_;
+        std::size_t old_local = local_size_;
+
+        global_size_ = new_global_size;
+        compute_local_partition();
+
+        managed_ptr_ = nullptr;
+        if (local_size_ > 0) {
+            auto err = cudaMallocManaged(&managed_ptr_, local_size_ * sizeof(T));
+            if (err != cudaSuccess) {
+                managed_ptr_ = old_ptr;
+                return DTL_ERROR_ALLOCATION_FAILED;
+            }
+            std::size_t copy_count = std::min(old_local, local_size_);
+            if (copy_count > 0 && old_ptr) {
+                if (device_id_ >= 0) cudaDeviceSynchronize();
+                std::memcpy(managed_ptr_, old_ptr, copy_count * sizeof(T));
+            }
+            if (local_size_ > copy_count) {
+                std::memset(managed_ptr_ + copy_count, 0, (local_size_ - copy_count) * sizeof(T));
+            }
+        }
+        if (old_ptr) cudaFree(old_ptr);
+        return DTL_SUCCESS;
+    }
+
+    dtl_status fill(const T& value) {
+        if (device_id_ >= 0) cudaDeviceSynchronize();
+        std::fill(managed_ptr_, managed_ptr_ + local_size_, value);
+        return DTL_SUCCESS;
+    }
+
+    T reduce_sum() const {
+        if (local_size_ == 0) return T{};
+        if (device_id_ >= 0) cudaDeviceSynchronize();
+        T sum{};
+        for (std::size_t i = 0; i < local_size_; ++i) sum = sum + managed_ptr_[i];
+        return sum;
+    }
+
+    T reduce_min() const {
+        if (local_size_ == 0) return T{};
+        if (device_id_ >= 0) cudaDeviceSynchronize();
+        return *std::min_element(managed_ptr_, managed_ptr_ + local_size_);
+    }
+
+    T reduce_max() const {
+        if (local_size_ == 0) return T{};
+        if (device_id_ >= 0) cudaDeviceSynchronize();
+        return *std::max_element(managed_ptr_, managed_ptr_ + local_size_);
+    }
+
+    void sort_ascending() {
+        if (local_size_ <= 1) return;
+        if (device_id_ >= 0) cudaDeviceSynchronize();
+        std::sort(managed_ptr_, managed_ptr_ + local_size_);
+    }
+
+    void sort_descending() {
+        if (local_size_ <= 1) return;
+        if (device_id_ >= 0) cudaDeviceSynchronize();
+        std::sort(managed_ptr_, managed_ptr_ + local_size_, std::greater<T>());
+    }
+
+    dtl_rank_t owner(dtl_index_t global_idx) const noexcept {
+        if (global_idx < 0 || static_cast<std::size_t>(global_idx) >= global_size_)
+            return DTL_NO_RANK;
+        switch (partition_) {
+            case DTL_PARTITION_BLOCK:   return owner_block(global_idx);
+            case DTL_PARTITION_CYCLIC:  return owner_cyclic(global_idx);
+            case DTL_PARTITION_REPLICATED: return rank_;
+            default: return DTL_NO_RANK;
+        }
+    }
+
+    bool is_local(dtl_index_t global_idx) const noexcept {
+        if (partition_ == DTL_PARTITION_REPLICATED)
+            return global_idx >= 0 && static_cast<std::size_t>(global_idx) < global_size_;
+        return owner(global_idx) == rank_;
+    }
+
+    dtl_index_t to_local(dtl_index_t global_idx) const noexcept {
+        if (!is_local(global_idx)) return -1;
+        switch (partition_) {
+            case DTL_PARTITION_BLOCK:      return global_idx - local_offset_;
+            case DTL_PARTITION_CYCLIC:     return global_idx / num_ranks_;
+            case DTL_PARTITION_REPLICATED: return global_idx;
+            default: return -1;
+        }
+    }
+
+    dtl_index_t to_global(dtl_index_t local_idx) const noexcept {
+        if (local_idx < 0 || static_cast<std::size_t>(local_idx) >= local_size_) return -1;
+        switch (partition_) {
+            case DTL_PARTITION_BLOCK:      return local_offset_ + local_idx;
+            case DTL_PARTITION_CYCLIC:     return local_idx * num_ranks_ + rank_;
+            case DTL_PARTITION_REPLICATED: return local_idx;
+            default: return -1;
+        }
+    }
+
+private:
+    void compute_local_partition() {
+        switch (partition_) {
+            case DTL_PARTITION_BLOCK: {
+                std::size_t base = global_size_ / num_ranks_;
+                std::size_t remainder = global_size_ % num_ranks_;
+                if (static_cast<std::size_t>(rank_) < remainder) {
+                    local_size_ = base + 1;
+                    local_offset_ = rank_ * (base + 1);
+                } else {
+                    local_size_ = base;
+                    local_offset_ = remainder * (base + 1) + (rank_ - remainder) * base;
+                }
+                break;
+            }
+            case DTL_PARTITION_CYCLIC: {
+                std::size_t base = global_size_ / num_ranks_;
+                std::size_t remainder = global_size_ % num_ranks_;
+                local_size_ = base + (static_cast<std::size_t>(rank_) < remainder ? 1 : 0);
+                local_offset_ = rank_;
+                break;
+            }
+            case DTL_PARTITION_REPLICATED:
+                local_size_ = global_size_;
+                local_offset_ = 0;
+                break;
+            default:
+                local_size_ = 0;
+                local_offset_ = 0;
+                break;
+        }
+    }
+
+    dtl_rank_t owner_block(dtl_index_t global_idx) const noexcept {
+        std::size_t base = global_size_ / num_ranks_;
+        std::size_t remainder = global_size_ % num_ranks_;
+        std::size_t boundary = remainder * (base + 1);
+        if (static_cast<std::size_t>(global_idx) < boundary)
+            return static_cast<dtl_rank_t>(global_idx / (base + 1));
+        return static_cast<dtl_rank_t>(remainder + (global_idx - boundary) / base);
+    }
+
+    dtl_rank_t owner_cyclic(dtl_index_t global_idx) const noexcept {
+        return static_cast<dtl_rank_t>(global_idx % num_ranks_);
+    }
+
+    std::size_t global_size_;
+    std::size_t local_size_ = 0;
+    std::ptrdiff_t local_offset_ = 0;
+    dtl_rank_t rank_;
+    dtl_rank_t num_ranks_;
+    dtl_partition_policy partition_;
+    std::size_t block_size_;
+    int device_id_;
+    T* managed_ptr_;
+};
+
+// ============================================================================
+// CUDA Device Vector Vtable Factory
+// ============================================================================
+
+template <typename T>
+const vector_vtable* get_device_vector_vtable() noexcept {
+    static const vector_vtable vtable = {
+        [](void* impl) { delete static_cast<device_vector_impl<T>*>(impl); },
+        [](const void* impl) -> std::size_t { return static_cast<const device_vector_impl<T>*>(impl)->global_size(); },
+        [](const void* impl) -> std::size_t { return static_cast<const device_vector_impl<T>*>(impl)->local_size(); },
+        [](const void* impl) -> std::ptrdiff_t { return static_cast<const device_vector_impl<T>*>(impl)->local_offset(); },
+        [](void*) -> void* { return nullptr; },  // local_data_mut (not host-accessible)
+        [](const void*) -> const void* { return nullptr; },  // local_data
+        [](void* impl) -> void* { return static_cast<device_vector_impl<T>*>(impl)->device_data(); },
+        [](const void* impl) -> const void* { return static_cast<const device_vector_impl<T>*>(impl)->device_data(); },
+        [](const void* impl, void* buf, std::size_t n) -> dtl_status { return static_cast<const device_vector_impl<T>*>(impl)->copy_to_host(buf, n); },
+        [](void* impl, const void* buf, std::size_t n) -> dtl_status { return static_cast<device_vector_impl<T>*>(impl)->copy_from_host(buf, n); },
+        [](void* impl, std::size_t s) -> dtl_status { return static_cast<device_vector_impl<T>*>(impl)->resize(s); },
+        [](void* impl, const void* val) -> dtl_status { return static_cast<device_vector_impl<T>*>(impl)->fill(*static_cast<const T*>(val)); },
+        [](const void* impl) -> dtl_rank_t { return static_cast<const device_vector_impl<T>*>(impl)->num_ranks(); },
+        [](const void* impl) -> dtl_rank_t { return static_cast<const device_vector_impl<T>*>(impl)->rank(); },
+        [](const void* impl, dtl_index_t i) -> dtl_rank_t { return static_cast<const device_vector_impl<T>*>(impl)->owner(i); },
+        [](const void* impl, dtl_index_t i) -> int { return static_cast<const device_vector_impl<T>*>(impl)->is_local(i) ? 1 : 0; },
+        [](const void* impl, dtl_index_t i) -> dtl_index_t { return static_cast<const device_vector_impl<T>*>(impl)->to_local(i); },
+        [](const void* impl, dtl_index_t i) -> dtl_index_t { return static_cast<const device_vector_impl<T>*>(impl)->to_global(i); },
+        [](const void* impl, void* r) -> dtl_status { *static_cast<T*>(r) = static_cast<const device_vector_impl<T>*>(impl)->reduce_sum(); return DTL_SUCCESS; },
+        [](const void* impl, void* r) -> dtl_status { *static_cast<T*>(r) = static_cast<const device_vector_impl<T>*>(impl)->reduce_min(); return DTL_SUCCESS; },
+        [](const void* impl, void* r) -> dtl_status { *static_cast<T*>(r) = static_cast<const device_vector_impl<T>*>(impl)->reduce_max(); return DTL_SUCCESS; },
+        [](void* impl) -> dtl_status { static_cast<device_vector_impl<T>*>(impl)->sort_ascending(); return DTL_SUCCESS; },
+        [](void* impl) -> dtl_status { static_cast<device_vector_impl<T>*>(impl)->sort_descending(); return DTL_SUCCESS; }
+    };
+    return &vtable;
+}
+
+// ============================================================================
+// CUDA Unified Memory Vector Vtable Factory
+// ============================================================================
+
+template <typename T>
+const vector_vtable* get_unified_vector_vtable() noexcept {
+    static const vector_vtable vtable = {
+        [](void* impl) { delete static_cast<unified_vector_impl<T>*>(impl); },
+        [](const void* impl) -> std::size_t { return static_cast<const unified_vector_impl<T>*>(impl)->global_size(); },
+        [](const void* impl) -> std::size_t { return static_cast<const unified_vector_impl<T>*>(impl)->local_size(); },
+        [](const void* impl) -> std::ptrdiff_t { return static_cast<const unified_vector_impl<T>*>(impl)->local_offset(); },
+        [](void* impl) -> void* { return static_cast<unified_vector_impl<T>*>(impl)->data(); },
+        [](const void* impl) -> const void* { return static_cast<const unified_vector_impl<T>*>(impl)->data(); },
+        [](void* impl) -> void* { return static_cast<unified_vector_impl<T>*>(impl)->device_data(); },
+        [](const void* impl) -> const void* { return static_cast<const unified_vector_impl<T>*>(impl)->device_data(); },
+        [](const void* impl, void* buf, std::size_t n) -> dtl_status { return static_cast<const unified_vector_impl<T>*>(impl)->copy_to_host(buf, n); },
+        [](void* impl, const void* buf, std::size_t n) -> dtl_status { return static_cast<unified_vector_impl<T>*>(impl)->copy_from_host(buf, n); },
+        [](void* impl, std::size_t s) -> dtl_status { return static_cast<unified_vector_impl<T>*>(impl)->resize(s); },
+        [](void* impl, const void* val) -> dtl_status { return static_cast<unified_vector_impl<T>*>(impl)->fill(*static_cast<const T*>(val)); },
+        [](const void* impl) -> dtl_rank_t { return static_cast<const unified_vector_impl<T>*>(impl)->num_ranks(); },
+        [](const void* impl) -> dtl_rank_t { return static_cast<const unified_vector_impl<T>*>(impl)->rank(); },
+        [](const void* impl, dtl_index_t i) -> dtl_rank_t { return static_cast<const unified_vector_impl<T>*>(impl)->owner(i); },
+        [](const void* impl, dtl_index_t i) -> int { return static_cast<const unified_vector_impl<T>*>(impl)->is_local(i) ? 1 : 0; },
+        [](const void* impl, dtl_index_t i) -> dtl_index_t { return static_cast<const unified_vector_impl<T>*>(impl)->to_local(i); },
+        [](const void* impl, dtl_index_t i) -> dtl_index_t { return static_cast<const unified_vector_impl<T>*>(impl)->to_global(i); },
+        [](const void* impl, void* r) -> dtl_status { *static_cast<T*>(r) = static_cast<const unified_vector_impl<T>*>(impl)->reduce_sum(); return DTL_SUCCESS; },
+        [](const void* impl, void* r) -> dtl_status { *static_cast<T*>(r) = static_cast<const unified_vector_impl<T>*>(impl)->reduce_min(); return DTL_SUCCESS; },
+        [](const void* impl, void* r) -> dtl_status { *static_cast<T*>(r) = static_cast<const unified_vector_impl<T>*>(impl)->reduce_max(); return DTL_SUCCESS; },
+        [](void* impl) -> dtl_status { static_cast<unified_vector_impl<T>*>(impl)->sort_ascending(); return DTL_SUCCESS; },
+        [](void* impl) -> dtl_status { static_cast<unified_vector_impl<T>*>(impl)->sort_descending(); return DTL_SUCCESS; }
+    };
+    return &vtable;
+}
+
+// ============================================================================
+// CUDA Dispatch Helpers
+// ============================================================================
+
+template <typename T>
+inline dtl_status create_device_vector(
+    std::size_t global_size, dtl_rank_t rank, dtl_rank_t num_ranks,
+    const stored_options& opts, const vector_vtable** out_vtable, void** out_impl) {
+    *out_vtable = get_device_vector_vtable<T>();
+    *out_impl = new device_vector_impl<T>(global_size, rank, num_ranks, opts.partition, opts.device_id, opts.block_size);
+    return DTL_SUCCESS;
+}
+
+template <typename T>
+inline dtl_status create_unified_vector(
+    std::size_t global_size, dtl_rank_t rank, dtl_rank_t num_ranks,
+    const stored_options& opts, const vector_vtable** out_vtable, void** out_impl) {
+    *out_vtable = get_unified_vector_vtable<T>();
+    *out_impl = new unified_vector_impl<T>(global_size, rank, num_ranks, opts.partition, opts.device_id, opts.block_size);
+    return DTL_SUCCESS;
+}
+
+inline dtl_status dispatch_create_device_vector(
+    dtl_dtype dtype, std::size_t global_size, dtl_rank_t rank, dtl_rank_t num_ranks,
+    const stored_options& opts, const vector_vtable** out_vtable, void** out_impl) {
+    switch (dtype) {
+        case DTL_DTYPE_INT8:    return create_device_vector<int8_t>(global_size, rank, num_ranks, opts, out_vtable, out_impl);
+        case DTL_DTYPE_INT16:   return create_device_vector<int16_t>(global_size, rank, num_ranks, opts, out_vtable, out_impl);
+        case DTL_DTYPE_INT32:   return create_device_vector<int32_t>(global_size, rank, num_ranks, opts, out_vtable, out_impl);
+        case DTL_DTYPE_INT64:   return create_device_vector<int64_t>(global_size, rank, num_ranks, opts, out_vtable, out_impl);
+        case DTL_DTYPE_UINT8: case DTL_DTYPE_BYTE: case DTL_DTYPE_BOOL:
+                                return create_device_vector<uint8_t>(global_size, rank, num_ranks, opts, out_vtable, out_impl);
+        case DTL_DTYPE_UINT16:  return create_device_vector<uint16_t>(global_size, rank, num_ranks, opts, out_vtable, out_impl);
+        case DTL_DTYPE_UINT32:  return create_device_vector<uint32_t>(global_size, rank, num_ranks, opts, out_vtable, out_impl);
+        case DTL_DTYPE_UINT64:  return create_device_vector<uint64_t>(global_size, rank, num_ranks, opts, out_vtable, out_impl);
+        case DTL_DTYPE_FLOAT32: return create_device_vector<float>(global_size, rank, num_ranks, opts, out_vtable, out_impl);
+        case DTL_DTYPE_FLOAT64: return create_device_vector<double>(global_size, rank, num_ranks, opts, out_vtable, out_impl);
+        default: return DTL_ERROR_INVALID_ARGUMENT;
+    }
+}
+
+inline dtl_status dispatch_create_unified_vector(
+    dtl_dtype dtype, std::size_t global_size, dtl_rank_t rank, dtl_rank_t num_ranks,
+    const stored_options& opts, const vector_vtable** out_vtable, void** out_impl) {
+    switch (dtype) {
+        case DTL_DTYPE_INT8:    return create_unified_vector<int8_t>(global_size, rank, num_ranks, opts, out_vtable, out_impl);
+        case DTL_DTYPE_INT16:   return create_unified_vector<int16_t>(global_size, rank, num_ranks, opts, out_vtable, out_impl);
+        case DTL_DTYPE_INT32:   return create_unified_vector<int32_t>(global_size, rank, num_ranks, opts, out_vtable, out_impl);
+        case DTL_DTYPE_INT64:   return create_unified_vector<int64_t>(global_size, rank, num_ranks, opts, out_vtable, out_impl);
+        case DTL_DTYPE_UINT8: case DTL_DTYPE_BYTE: case DTL_DTYPE_BOOL:
+                                return create_unified_vector<uint8_t>(global_size, rank, num_ranks, opts, out_vtable, out_impl);
+        case DTL_DTYPE_UINT16:  return create_unified_vector<uint16_t>(global_size, rank, num_ranks, opts, out_vtable, out_impl);
+        case DTL_DTYPE_UINT32:  return create_unified_vector<uint32_t>(global_size, rank, num_ranks, opts, out_vtable, out_impl);
+        case DTL_DTYPE_UINT64:  return create_unified_vector<uint64_t>(global_size, rank, num_ranks, opts, out_vtable, out_impl);
+        case DTL_DTYPE_FLOAT32: return create_unified_vector<float>(global_size, rank, num_ranks, opts, out_vtable, out_impl);
+        case DTL_DTYPE_FLOAT64: return create_unified_vector<double>(global_size, rank, num_ranks, opts, out_vtable, out_impl);
+        default: return DTL_ERROR_INVALID_ARGUMENT;
+    }
+}
+
+#endif  // DTL_ENABLE_CUDA
+
+// ============================================================================
 // Dispatch Function
 // ============================================================================
 
@@ -448,14 +1067,24 @@ inline dtl_status dispatch_create_vector(
     const vector_vtable** out_vtable,
     void** out_impl) {
 
-    // The C ABI must not silently construct host-backed objects for non-host
-    // placements. Until real CUDA/unified implementations exist here, fail
-    // fast at creation time instead of returning a misleading handle.
-    if (opts.placement == DTL_PLACEMENT_DEVICE ||
-        opts.placement == DTL_PLACEMENT_UNIFIED ||
-        opts.placement == DTL_PLACEMENT_DEVICE_PREFERRED) {
+    // Route non-host placements to CUDA implementations when available
+    if (opts.placement == DTL_PLACEMENT_DEVICE_PREFERRED) {
         return DTL_ERROR_NOT_SUPPORTED;
     }
+
+#if DTL_ENABLE_CUDA
+    if (opts.placement == DTL_PLACEMENT_DEVICE) {
+        return dispatch_create_device_vector(dtype, global_size, rank, num_ranks, opts, out_vtable, out_impl);
+    }
+    if (opts.placement == DTL_PLACEMENT_UNIFIED) {
+        return dispatch_create_unified_vector(dtype, global_size, rank, num_ranks, opts, out_vtable, out_impl);
+    }
+#else
+    if (opts.placement == DTL_PLACEMENT_DEVICE ||
+        opts.placement == DTL_PLACEMENT_UNIFIED) {
+        return DTL_ERROR_NOT_SUPPORTED;
+    }
+#endif
 
     // Dispatch based on dtype
     try {

@@ -15,11 +15,16 @@
 
 #include "container_vtable.hpp"
 #include "policy_matrix.hpp"
+#include "placement_mapping.hpp"
 #include "vector_dispatch.hpp"
 
 #include <dtl/bindings/c/dtl_types.h>
 #include <dtl/bindings/c/dtl_status.h>
 #include <dtl/bindings/c/dtl_policies.h>
+
+#if DTL_ENABLE_CUDA
+#include <cuda_runtime.h>
+#endif
 
 namespace dtl::c::detail {
 
@@ -44,6 +49,34 @@ public:
         return DTL_ERROR_NOT_SUPPORTED;  // Arrays have fixed size
     }
 };
+
+// ============================================================================
+// CUDA Array Implementations
+// ============================================================================
+
+#if DTL_ENABLE_CUDA
+
+/**
+ * @brief Device array: wraps device_vector_impl with resize disabled
+ */
+template <typename T>
+class device_array_impl : public device_vector_impl<T> {
+public:
+    using device_vector_impl<T>::device_vector_impl;
+    dtl_status resize(std::size_t) { return DTL_ERROR_NOT_SUPPORTED; }
+};
+
+/**
+ * @brief Unified array: wraps unified_vector_impl with resize disabled
+ */
+template <typename T>
+class unified_array_impl : public unified_vector_impl<T> {
+public:
+    using unified_vector_impl<T>::unified_vector_impl;
+    dtl_status resize(std::size_t) { return DTL_ERROR_NOT_SUPPORTED; }
+};
+
+#endif  // DTL_ENABLE_CUDA
 
 // ============================================================================
 // Vtable Factory Functions
@@ -164,6 +197,108 @@ const array_vtable* get_host_array_vtable() noexcept {
 }
 
 // ============================================================================
+// CUDA Array Vtable Factories and Dispatch
+// ============================================================================
+
+#if DTL_ENABLE_CUDA
+
+template <typename T>
+const array_vtable* get_device_array_vtable() noexcept {
+    static const array_vtable vtable = {
+        [](void* impl) { delete static_cast<device_array_impl<T>*>(impl); },
+        [](const void* impl) -> std::size_t { return static_cast<const device_array_impl<T>*>(impl)->global_size(); },
+        [](const void* impl) -> std::size_t { return static_cast<const device_array_impl<T>*>(impl)->local_size(); },
+        [](const void* impl) -> std::ptrdiff_t { return static_cast<const device_array_impl<T>*>(impl)->local_offset(); },
+        [](void*) -> void* { return nullptr; },
+        [](const void*) -> const void* { return nullptr; },
+        [](void* impl) -> void* { return static_cast<device_array_impl<T>*>(impl)->device_data(); },
+        [](const void* impl) -> const void* { return static_cast<const device_array_impl<T>*>(impl)->device_data(); },
+        [](const void* impl, void* buf, std::size_t n) -> dtl_status { return static_cast<const device_array_impl<T>*>(impl)->copy_to_host(buf, n); },
+        [](void* impl, const void* buf, std::size_t n) -> dtl_status { return static_cast<device_array_impl<T>*>(impl)->copy_from_host(buf, n); },
+        [](void* impl, const void* val) -> dtl_status { return static_cast<device_array_impl<T>*>(impl)->fill(*static_cast<const T*>(val)); },
+        [](const void* impl) -> dtl_rank_t { return static_cast<const device_array_impl<T>*>(impl)->num_ranks(); },
+        [](const void* impl) -> dtl_rank_t { return static_cast<const device_array_impl<T>*>(impl)->rank(); },
+        [](const void* impl, dtl_index_t i) -> dtl_rank_t { return static_cast<const device_array_impl<T>*>(impl)->owner(i); },
+        [](const void* impl, dtl_index_t i) -> int { return static_cast<const device_array_impl<T>*>(impl)->is_local(i) ? 1 : 0; },
+        [](const void* impl, dtl_index_t i) -> dtl_index_t { return static_cast<const device_array_impl<T>*>(impl)->to_local(i); },
+        [](const void* impl, dtl_index_t i) -> dtl_index_t { return static_cast<const device_array_impl<T>*>(impl)->to_global(i); },
+        [](const void* impl, void* r) -> dtl_status { *static_cast<T*>(r) = static_cast<const device_array_impl<T>*>(impl)->reduce_sum(); return DTL_SUCCESS; },
+        [](const void* impl, void* r) -> dtl_status { *static_cast<T*>(r) = static_cast<const device_array_impl<T>*>(impl)->reduce_min(); return DTL_SUCCESS; },
+        [](const void* impl, void* r) -> dtl_status { *static_cast<T*>(r) = static_cast<const device_array_impl<T>*>(impl)->reduce_max(); return DTL_SUCCESS; }
+    };
+    return &vtable;
+}
+
+template <typename T>
+const array_vtable* get_unified_array_vtable() noexcept {
+    static const array_vtable vtable = {
+        [](void* impl) { delete static_cast<unified_array_impl<T>*>(impl); },
+        [](const void* impl) -> std::size_t { return static_cast<const unified_array_impl<T>*>(impl)->global_size(); },
+        [](const void* impl) -> std::size_t { return static_cast<const unified_array_impl<T>*>(impl)->local_size(); },
+        [](const void* impl) -> std::ptrdiff_t { return static_cast<const unified_array_impl<T>*>(impl)->local_offset(); },
+        [](void* impl) -> void* { return static_cast<unified_array_impl<T>*>(impl)->data(); },
+        [](const void* impl) -> const void* { return static_cast<const unified_array_impl<T>*>(impl)->data(); },
+        [](void* impl) -> void* { return static_cast<unified_array_impl<T>*>(impl)->device_data(); },
+        [](const void* impl) -> const void* { return static_cast<const unified_array_impl<T>*>(impl)->device_data(); },
+        [](const void* impl, void* buf, std::size_t n) -> dtl_status { return static_cast<const unified_array_impl<T>*>(impl)->copy_to_host(buf, n); },
+        [](void* impl, const void* buf, std::size_t n) -> dtl_status { return static_cast<unified_array_impl<T>*>(impl)->copy_from_host(buf, n); },
+        [](void* impl, const void* val) -> dtl_status { return static_cast<unified_array_impl<T>*>(impl)->fill(*static_cast<const T*>(val)); },
+        [](const void* impl) -> dtl_rank_t { return static_cast<const unified_array_impl<T>*>(impl)->num_ranks(); },
+        [](const void* impl) -> dtl_rank_t { return static_cast<const unified_array_impl<T>*>(impl)->rank(); },
+        [](const void* impl, dtl_index_t i) -> dtl_rank_t { return static_cast<const unified_array_impl<T>*>(impl)->owner(i); },
+        [](const void* impl, dtl_index_t i) -> int { return static_cast<const unified_array_impl<T>*>(impl)->is_local(i) ? 1 : 0; },
+        [](const void* impl, dtl_index_t i) -> dtl_index_t { return static_cast<const unified_array_impl<T>*>(impl)->to_local(i); },
+        [](const void* impl, dtl_index_t i) -> dtl_index_t { return static_cast<const unified_array_impl<T>*>(impl)->to_global(i); },
+        [](const void* impl, void* r) -> dtl_status { *static_cast<T*>(r) = static_cast<const unified_array_impl<T>*>(impl)->reduce_sum(); return DTL_SUCCESS; },
+        [](const void* impl, void* r) -> dtl_status { *static_cast<T*>(r) = static_cast<const unified_array_impl<T>*>(impl)->reduce_min(); return DTL_SUCCESS; },
+        [](const void* impl, void* r) -> dtl_status { *static_cast<T*>(r) = static_cast<const unified_array_impl<T>*>(impl)->reduce_max(); return DTL_SUCCESS; }
+    };
+    return &vtable;
+}
+
+inline dtl_status dispatch_create_device_array(
+    dtl_dtype dtype, std::size_t size, dtl_rank_t rank, dtl_rank_t num_ranks,
+    const stored_options& opts, const array_vtable** out_vtable, void** out_impl) {
+    switch (dtype) {
+        case DTL_DTYPE_INT8:    { *out_vtable = get_device_array_vtable<int8_t>(); *out_impl = new device_array_impl<int8_t>(size, rank, num_ranks, opts.partition, opts.device_id, opts.block_size); break; }
+        case DTL_DTYPE_INT16:   { *out_vtable = get_device_array_vtable<int16_t>(); *out_impl = new device_array_impl<int16_t>(size, rank, num_ranks, opts.partition, opts.device_id, opts.block_size); break; }
+        case DTL_DTYPE_INT32:   { *out_vtable = get_device_array_vtable<int32_t>(); *out_impl = new device_array_impl<int32_t>(size, rank, num_ranks, opts.partition, opts.device_id, opts.block_size); break; }
+        case DTL_DTYPE_INT64:   { *out_vtable = get_device_array_vtable<int64_t>(); *out_impl = new device_array_impl<int64_t>(size, rank, num_ranks, opts.partition, opts.device_id, opts.block_size); break; }
+        case DTL_DTYPE_UINT8: case DTL_DTYPE_BYTE: case DTL_DTYPE_BOOL:
+                                { *out_vtable = get_device_array_vtable<uint8_t>(); *out_impl = new device_array_impl<uint8_t>(size, rank, num_ranks, opts.partition, opts.device_id, opts.block_size); break; }
+        case DTL_DTYPE_UINT16:  { *out_vtable = get_device_array_vtable<uint16_t>(); *out_impl = new device_array_impl<uint16_t>(size, rank, num_ranks, opts.partition, opts.device_id, opts.block_size); break; }
+        case DTL_DTYPE_UINT32:  { *out_vtable = get_device_array_vtable<uint32_t>(); *out_impl = new device_array_impl<uint32_t>(size, rank, num_ranks, opts.partition, opts.device_id, opts.block_size); break; }
+        case DTL_DTYPE_UINT64:  { *out_vtable = get_device_array_vtable<uint64_t>(); *out_impl = new device_array_impl<uint64_t>(size, rank, num_ranks, opts.partition, opts.device_id, opts.block_size); break; }
+        case DTL_DTYPE_FLOAT32: { *out_vtable = get_device_array_vtable<float>(); *out_impl = new device_array_impl<float>(size, rank, num_ranks, opts.partition, opts.device_id, opts.block_size); break; }
+        case DTL_DTYPE_FLOAT64: { *out_vtable = get_device_array_vtable<double>(); *out_impl = new device_array_impl<double>(size, rank, num_ranks, opts.partition, opts.device_id, opts.block_size); break; }
+        default: return DTL_ERROR_INVALID_ARGUMENT;
+    }
+    return DTL_SUCCESS;
+}
+
+inline dtl_status dispatch_create_unified_array(
+    dtl_dtype dtype, std::size_t size, dtl_rank_t rank, dtl_rank_t num_ranks,
+    const stored_options& opts, const array_vtable** out_vtable, void** out_impl) {
+    switch (dtype) {
+        case DTL_DTYPE_INT8:    { *out_vtable = get_unified_array_vtable<int8_t>(); *out_impl = new unified_array_impl<int8_t>(size, rank, num_ranks, opts.partition, opts.device_id, opts.block_size); break; }
+        case DTL_DTYPE_INT16:   { *out_vtable = get_unified_array_vtable<int16_t>(); *out_impl = new unified_array_impl<int16_t>(size, rank, num_ranks, opts.partition, opts.device_id, opts.block_size); break; }
+        case DTL_DTYPE_INT32:   { *out_vtable = get_unified_array_vtable<int32_t>(); *out_impl = new unified_array_impl<int32_t>(size, rank, num_ranks, opts.partition, opts.device_id, opts.block_size); break; }
+        case DTL_DTYPE_INT64:   { *out_vtable = get_unified_array_vtable<int64_t>(); *out_impl = new unified_array_impl<int64_t>(size, rank, num_ranks, opts.partition, opts.device_id, opts.block_size); break; }
+        case DTL_DTYPE_UINT8: case DTL_DTYPE_BYTE: case DTL_DTYPE_BOOL:
+                                { *out_vtable = get_unified_array_vtable<uint8_t>(); *out_impl = new unified_array_impl<uint8_t>(size, rank, num_ranks, opts.partition, opts.device_id, opts.block_size); break; }
+        case DTL_DTYPE_UINT16:  { *out_vtable = get_unified_array_vtable<uint16_t>(); *out_impl = new unified_array_impl<uint16_t>(size, rank, num_ranks, opts.partition, opts.device_id, opts.block_size); break; }
+        case DTL_DTYPE_UINT32:  { *out_vtable = get_unified_array_vtable<uint32_t>(); *out_impl = new unified_array_impl<uint32_t>(size, rank, num_ranks, opts.partition, opts.device_id, opts.block_size); break; }
+        case DTL_DTYPE_UINT64:  { *out_vtable = get_unified_array_vtable<uint64_t>(); *out_impl = new unified_array_impl<uint64_t>(size, rank, num_ranks, opts.partition, opts.device_id, opts.block_size); break; }
+        case DTL_DTYPE_FLOAT32: { *out_vtable = get_unified_array_vtable<float>(); *out_impl = new unified_array_impl<float>(size, rank, num_ranks, opts.partition, opts.device_id, opts.block_size); break; }
+        case DTL_DTYPE_FLOAT64: { *out_vtable = get_unified_array_vtable<double>(); *out_impl = new unified_array_impl<double>(size, rank, num_ranks, opts.partition, opts.device_id, opts.block_size); break; }
+        default: return DTL_ERROR_INVALID_ARGUMENT;
+    }
+    return DTL_SUCCESS;
+}
+
+#endif  // DTL_ENABLE_CUDA
+
+// ============================================================================
 // Dispatch Function
 // ============================================================================
 
@@ -179,14 +314,23 @@ inline dtl_status dispatch_create_array(
     const array_vtable** out_vtable,
     void** out_impl) {
 
-    // The C ABI must not silently construct host-backed objects for non-host
-    // placements. Until real CUDA/unified implementations exist here, fail
-    // fast at creation time instead of returning a misleading handle.
-    if (opts.placement == DTL_PLACEMENT_DEVICE ||
-        opts.placement == DTL_PLACEMENT_UNIFIED ||
-        opts.placement == DTL_PLACEMENT_DEVICE_PREFERRED) {
+    if (opts.placement == DTL_PLACEMENT_DEVICE_PREFERRED) {
         return DTL_ERROR_NOT_SUPPORTED;
     }
+
+#if DTL_ENABLE_CUDA
+    if (opts.placement == DTL_PLACEMENT_DEVICE) {
+        return dispatch_create_device_array(dtype, size, rank, num_ranks, opts, out_vtable, out_impl);
+    }
+    if (opts.placement == DTL_PLACEMENT_UNIFIED) {
+        return dispatch_create_unified_array(dtype, size, rank, num_ranks, opts, out_vtable, out_impl);
+    }
+#else
+    if (opts.placement == DTL_PLACEMENT_DEVICE ||
+        opts.placement == DTL_PLACEMENT_UNIFIED) {
+        return DTL_ERROR_NOT_SUPPORTED;
+    }
+#endif
 
     try {
         switch (dtype) {

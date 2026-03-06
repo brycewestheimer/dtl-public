@@ -22,6 +22,7 @@
 #include "detail/container_vtable.hpp"
 #include "detail/error_policy.hpp"
 #include "detail/policy_matrix.hpp"
+#include "detail/placement_mapping.hpp"
 #include "detail/array_dispatch.hpp"
 #include "detail/vector_dispatch.hpp"
 
@@ -236,6 +237,14 @@ dtl_status dtl_vector_create_with_options(
         return apply_error_policy(ctx, status, stored.error, "Invalid container options");
     }
 
+    // Validate CUDA context for device placements
+    if (placement_requires_cuda(stored.placement)) {
+        if (!(ctx->domain_flags & dtl_context_s::HAS_CUDA)) {
+            return apply_error_policy(ctx, DTL_ERROR_BACKEND_UNAVAILABLE, stored.error,
+                                      "CUDA context required for device/unified placement");
+        }
+    }
+
     // Dispatch to create implementation
     const vector_vtable* vtable = nullptr;
     void* impl = nullptr;
@@ -295,6 +304,14 @@ dtl_status dtl_array_create_with_options(
     dtl_status status = validate_and_normalize(opts, &stored);
     if (status != DTL_SUCCESS) {
         return apply_error_policy(ctx, status, stored.error, "Invalid container options");
+    }
+
+    // Validate CUDA context for device placements
+    if (placement_requires_cuda(stored.placement)) {
+        if (!(ctx->domain_flags & dtl_context_s::HAS_CUDA)) {
+            return apply_error_policy(ctx, DTL_ERROR_BACKEND_UNAVAILABLE, stored.error,
+                                      "CUDA context required for device/unified placement");
+        }
     }
 
     // Dispatch to create implementation

@@ -28,6 +28,9 @@ set(DTL_C_TEST_SOURCES
     test_mpmd.cpp
     test_topology.cpp
     test_futures.cpp
+    test_vector_cuda.cpp
+    test_array_cuda.cpp
+    test_tensor_cuda.cpp
 )
 
 # Create test executable

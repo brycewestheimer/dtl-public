@@ -193,6 +193,8 @@ target_sources(dtl_unit_tests PRIVATE
     unit/containers/test_distributed_array_impl.cpp
     unit/containers/test_distributed_tensor_impl.cpp
     unit/containers/test_distributed_vector.cpp
+    unit/containers/test_distributed_vector_device.cpp
+    unit/containers/test_distributed_vector_unified.cpp
     unit/containers/test_distributed_map.cpp
     unit/containers/test_distributed_map_phase06.cpp
     unit/containers/test_distributed_span.cpp
