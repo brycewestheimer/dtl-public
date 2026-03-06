@@ -162,7 +162,8 @@ TEST_F(MpiMultiRankTest, DistributedMapLocalInsert) {
         dmap.insert(key, key * 10);
     }
 
-    // Hash partition distributes keys across ranks — only global total is deterministic
+    auto flush_result = dmap.flush_pending_with_comm(comm_);
+    ASSERT_TRUE(flush_result) << flush_result.error().message();
 
     // Allreduce total size
     auto total = comm_.template allreduce_sum_value<long>(

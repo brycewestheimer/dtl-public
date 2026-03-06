@@ -23,8 +23,10 @@
 #endif
 
 #include <atomic>
+#include <mutex>
 #include <memory>
 #include <type_traits>
+#include <unordered_map>
 
 namespace dtl {
 namespace cuda {
@@ -84,12 +86,14 @@ public:
 
     /// @brief Default constructor (uses current device)
     cuda_memory_space()
-        : device_id_(current_device()) {}
+        : device_id_(current_device())
+        , aligned_allocations_(std::make_unique<aligned_allocation_state>()) {}
 
     /// @brief Construct for specific device
     /// @param device_id CUDA device ID
     explicit cuda_memory_space(device_id_t device_id)
-        : device_id_(device_id) {}
+        : device_id_(device_id)
+        , aligned_allocations_(std::make_unique<aligned_allocation_state>()) {}
 
     /// @brief Destructor
     ~cuda_memory_space() = default;
@@ -102,10 +106,14 @@ public:
     cuda_memory_space(cuda_memory_space&& other) noexcept
         : device_id_(other.device_id_)
         , total_allocated_(other.total_allocated_.load(std::memory_order_relaxed))
-        , peak_allocated_(other.peak_allocated_.load(std::memory_order_relaxed)) {
+        , peak_allocated_(other.peak_allocated_.load(std::memory_order_relaxed))
+        , aligned_allocations_(std::move(other.aligned_allocations_)) {
         other.device_id_ = invalid_device;
         other.total_allocated_.store(0, std::memory_order_relaxed);
         other.peak_allocated_.store(0, std::memory_order_relaxed);
+        if (!other.aligned_allocations_) {
+            other.aligned_allocations_ = std::make_unique<aligned_allocation_state>();
+        }
     }
 
     cuda_memory_space& operator=(cuda_memory_space&& other) noexcept {
@@ -115,9 +123,13 @@ public:
                                    std::memory_order_relaxed);
             peak_allocated_.store(other.peak_allocated_.load(std::memory_order_relaxed),
                                   std::memory_order_relaxed);
+            aligned_allocations_ = std::move(other.aligned_allocations_);
             other.device_id_ = invalid_device;
             other.total_allocated_.store(0, std::memory_order_relaxed);
             other.peak_allocated_.store(0, std::memory_order_relaxed);
+            if (!other.aligned_allocations_) {
+                other.aligned_allocations_ = std::make_unique<aligned_allocation_state>();
+            }
         }
         return *this;
     }
@@ -191,9 +203,8 @@ public:
         }
 
         // For larger alignments, over-allocate to guarantee alignment.
-        // Layout: [original_ptr storage (sizeof(void*)) | padding | aligned data]
-        // The original pointer is stored just before the aligned address so
-        // deallocate_aligned() can recover it for cudaFree.
+        // The raw allocation metadata must stay on the host side; writing
+        // bookkeeping bytes into device memory from the CPU is invalid.
         size_type extra = alignment + sizeof(void*);
         void* raw = allocate(size + extra);
         if (!raw) return nullptr;
@@ -203,8 +214,11 @@ public:
         auto aligned_addr = (raw_addr + alignment - 1) & ~(alignment - 1);
         auto* aligned_ptr = reinterpret_cast<void*>(aligned_addr);
 
-        // Store original pointer just before the aligned address
-        reinterpret_cast<void**>(aligned_ptr)[-1] = raw;
+        {
+            std::scoped_lock lock(aligned_allocations_->mutex);
+            aligned_allocations_->map.emplace(
+                aligned_ptr, aligned_allocation{.raw = raw, .allocated_size = size + extra});
+        }
 
         return aligned_ptr;
 #else
@@ -227,10 +241,18 @@ public:
             return;
         }
 
-        // Recover original pointer stored just before the aligned address
-        void* raw = reinterpret_cast<void**>(ptr)[-1];
-        size_type extra = alignment + sizeof(void*);
-        deallocate(raw, size + extra);
+        aligned_allocation allocation{};
+        {
+            std::scoped_lock lock(aligned_allocations_->mutex);
+            auto it = aligned_allocations_->map.find(ptr);
+            if (it == aligned_allocations_->map.end()) {
+                return;
+            }
+            allocation = it->second;
+            aligned_allocations_->map.erase(it);
+        }
+
+        deallocate(allocation.raw, allocation.allocated_size);
 #else
         (void)ptr; (void)size; (void)alignment;
 #endif
@@ -363,9 +385,20 @@ public:
     }
 
 private:
+    struct aligned_allocation {
+        void* raw = nullptr;
+        size_type allocated_size = 0;
+    };
+
+    struct aligned_allocation_state {
+        std::mutex mutex;
+        std::unordered_map<void*, aligned_allocation> map;
+    };
+
     device_id_t device_id_ = invalid_device;
     std::atomic<size_type> total_allocated_{0};
     std::atomic<size_type> peak_allocated_{0};
+    std::unique_ptr<aligned_allocation_state> aligned_allocations_;
 };
 
 // ============================================================================

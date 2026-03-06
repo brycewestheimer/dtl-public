@@ -619,31 +619,12 @@ public:
         }
 
         try {
-            // Group inserts by destination rank
-            std::vector<std::vector<std::pair<K, V>>> insert_by_rank(
-                static_cast<size_type>(num_ranks_));
-            for (const auto& [key, value] : pending_inserts_) {
-                rank_t dest = owner(key);
-                insert_by_rank[static_cast<size_type>(dest)].emplace_back(key, value);
-            }
-
-            // Group insert_or_assigns by destination rank
-            std::vector<std::vector<std::pair<K, V>>> assign_by_rank(
-                static_cast<size_type>(num_ranks_));
-            for (const auto& [key, value] : pending_insert_or_assigns_) {
-                rank_t dest = owner(key);
-                assign_by_rank[static_cast<size_type>(dest)].emplace_back(key, value);
-            }
-
-            // Group erases by destination rank
-            std::vector<std::vector<K>> erase_by_rank(
-                static_cast<size_type>(num_ranks_));
-            for (const auto& key : pending_erases_) {
-                rank_t dest = owner(key);
-                erase_by_rank[static_cast<size_type>(dest)].push_back(key);
-            }
-
-            auto insert_exchange = exchange_kv_buckets_with_comm(insert_by_rank, comm);
+            auto insert_exchange = collect_kv_operations_with_comm(
+                pending_inserts_,
+                comm,
+                [this](const std::pair<K, V>& entry) {
+                    return owner(entry.first) == my_rank_;
+                });
             if (!insert_exchange) {
                 return result<void>::failure(insert_exchange.error());
             }
@@ -654,7 +635,12 @@ public:
                 local_map_.emplace(key, value);
             }
 
-            auto assign_exchange = exchange_kv_buckets_with_comm(assign_by_rank, comm);
+            auto assign_exchange = collect_kv_operations_with_comm(
+                pending_insert_or_assigns_,
+                comm,
+                [this](const std::pair<K, V>& entry) {
+                    return owner(entry.first) == my_rank_;
+                });
             if (!assign_exchange) {
                 return result<void>::failure(assign_exchange.error());
             }
@@ -664,7 +650,12 @@ public:
                 local_map_.insert_or_assign(key, value);
             }
 
-            auto erase_exchange = exchange_key_buckets_with_comm(erase_by_rank, comm);
+            auto erase_exchange = collect_key_operations_with_comm(
+                pending_erases_,
+                comm,
+                [this](const K& key) {
+                    return owner(key) == my_rank_;
+                });
             if (!erase_exchange) {
                 return result<void>::failure(erase_exchange.error());
             }
@@ -1228,6 +1219,92 @@ private:
         return result<std::vector<ValueT>>::success(std::move(out));
     }
 
+    template <typename BucketT, typename SerializeBucketFn, typename DeserializeBucketFn,
+              typename ValueT, typename Communicator, typename Predicate>
+    result<std::vector<ValueT>> collect_serialized_values_with_comm(
+        const BucketT& local_bucket,
+        Communicator& comm,
+        SerializeBucketFn serialize_bucket,
+        DeserializeBucketFn deserialize_bucket,
+        Predicate should_apply) {
+        if constexpr (!(requires(Communicator& c,
+                                 const void* sendbuf,
+                                 void* recvbuf,
+                                 const int* counts,
+                                 const int* displs) {
+            c.allgather(sendbuf, recvbuf, sizeof(int));
+            c.allgatherv(sendbuf, size_type{}, recvbuf, counts, displs,
+                         sizeof(std::byte));
+        })) {
+            auto local_bytes = serialize_bucket(local_bucket);
+            auto decoded = deserialize_bucket(std::span<const std::byte>(
+                local_bytes.data(),
+                local_bytes.size()));
+            if (!decoded) {
+                return result<std::vector<ValueT>>::failure(decoded.error());
+            }
+
+            std::vector<ValueT> out;
+            auto values = std::move(decoded.value());
+            for (auto& value : values) {
+                if (should_apply(value)) {
+                    out.push_back(std::move(value));
+                }
+            }
+            return result<std::vector<ValueT>>::success(std::move(out));
+        } else {
+            auto local_bytes = serialize_bucket(local_bucket);
+            int my_count = static_cast<int>(local_bytes.size());
+
+            std::vector<int> recv_counts(static_cast<size_type>(num_ranks_));
+            comm.allgather(&my_count, recv_counts.data(), sizeof(int));
+
+            std::vector<int> recv_displs(static_cast<size_type>(num_ranks_));
+            std::exclusive_scan(recv_counts.begin(), recv_counts.end(),
+                                recv_displs.begin(), 0);
+
+            const size_type total_recv = recv_counts.empty()
+                ? 0
+                : static_cast<size_type>(recv_displs.back() + recv_counts.back());
+            std::vector<std::byte> recv_flat(total_recv);
+
+            if (total_recv > 0) {
+                comm.allgatherv(local_bytes.data(),
+                                static_cast<size_type>(my_count),
+                                recv_flat.data(),
+                                recv_counts.data(),
+                                recv_displs.data(),
+                                sizeof(std::byte));
+            }
+
+            std::vector<ValueT> out;
+            for (rank_t r = 0; r < num_ranks_; ++r) {
+                const auto idx = static_cast<size_type>(r);
+                const size_type count = static_cast<size_type>(recv_counts[idx]);
+                if (count == 0) {
+                    continue;
+                }
+
+                std::span<const std::byte> segment(
+                    recv_flat.data() + recv_displs[idx],
+                    count);
+                auto decoded = deserialize_bucket(segment);
+                if (!decoded) {
+                    return result<std::vector<ValueT>>::failure(decoded.error());
+                }
+
+                auto values = std::move(decoded.value());
+                for (auto& value : values) {
+                    if (should_apply(value)) {
+                        out.push_back(std::move(value));
+                    }
+                }
+            }
+
+            return result<std::vector<ValueT>>::success(std::move(out));
+        }
+    }
+
     template <typename Communicator>
     result<std::vector<std::pair<K, V>>> exchange_kv_buckets_with_comm(
         const std::vector<std::vector<std::pair<K, V>>>& buckets,
@@ -1242,6 +1319,22 @@ private:
             &deserialize_kv_bucket);
     }
 
+    template <typename Communicator, typename Predicate>
+    result<std::vector<std::pair<K, V>>> collect_kv_operations_with_comm(
+        const std::vector<std::pair<K, V>>& local_values,
+        Communicator& comm,
+        Predicate should_apply) {
+        return collect_serialized_values_with_comm<std::vector<std::pair<K, V>>,
+                                                   decltype(&serialize_kv_bucket),
+                                                   decltype(&deserialize_kv_bucket),
+                                                   std::pair<K, V>>(
+            local_values,
+            comm,
+            &serialize_kv_bucket,
+            &deserialize_kv_bucket,
+            should_apply);
+    }
+
     template <typename Communicator>
     result<std::vector<K>> exchange_key_buckets_with_comm(
         const std::vector<std::vector<K>>& buckets,
@@ -1254,6 +1347,22 @@ private:
             comm,
             &serialize_key_bucket,
             &deserialize_key_bucket);
+    }
+
+    template <typename Communicator, typename Predicate>
+    result<std::vector<K>> collect_key_operations_with_comm(
+        const std::vector<K>& local_values,
+        Communicator& comm,
+        Predicate should_apply) {
+        return collect_serialized_values_with_comm<std::vector<K>,
+                                                   decltype(&serialize_key_bucket),
+                                                   decltype(&deserialize_key_bucket),
+                                                   K>(
+            local_values,
+            comm,
+            &serialize_key_bucket,
+            &deserialize_key_bucket,
+            should_apply);
     }
 };
 

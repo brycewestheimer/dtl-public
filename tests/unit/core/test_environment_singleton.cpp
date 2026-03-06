@@ -357,7 +357,11 @@ TEST(EnvironmentSingletonTest, HasShmemQuery) {
 
 TEST(EnvironmentSingletonTest, HasNcclQuery) {
     environment env{environment_options::minimal()};
+#if DTL_ENABLE_NCCL
+    EXPECT_TRUE(env.has_nccl());
+#else
     EXPECT_FALSE(env.has_nccl());
+#endif
 }
 
 TEST(EnvironmentSingletonTest, HasHipQuery) {

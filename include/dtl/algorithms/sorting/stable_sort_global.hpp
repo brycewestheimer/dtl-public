@@ -249,143 +249,49 @@ stable_sort_global_result stable_sort_global(
     }
 
     // ========================================================================
-    // Phase 3: Sample augmented data for pivot selection
+    // Correctness-first fallback: gather all augmented elements, globally stable
+    // sort them on every rank, then restore the original block partition.
     // ========================================================================
-    size_type samples_per_rank = std::max(
-        static_cast<size_type>(1),
-        std::min(local_size, static_cast<size_type>(3 * num_ranks)));
-
-    // Sample based on values only (but we send full augmented elements)
-    std::vector<augmented_type> local_samples;
-    local_samples.reserve(samples_per_rank);
-    for (size_type i = 0; i < samples_per_rank; ++i) {
-        size_type idx = (i * local_size) / samples_per_rank;
-        if (idx < augmented_local.size()) {
-            local_samples.push_back(augmented_local[idx]);
-        }
-    }
-
-    // ========================================================================
-    // Phase 4: Allgather samples
-    // ========================================================================
-    int my_sample_count = static_cast<int>(local_samples.size());
-    std::vector<int> sample_counts(static_cast<size_type>(num_ranks));
-    comm.allgather(&my_sample_count, sample_counts.data(), sizeof(int));
-
-    std::vector<int> sample_displs(static_cast<size_type>(num_ranks));
-    std::exclusive_scan(sample_counts.begin(), sample_counts.end(),
-                        sample_displs.begin(), 0);
-
-    size_type total_samples = static_cast<size_type>(
-        sample_displs.back() + sample_counts.back());
-
-    std::vector<augmented_type> all_samples(total_samples);
-    comm.allgatherv(local_samples.data(),
-                    static_cast<size_type>(my_sample_count),
-                    all_samples.data(),
-                    sample_counts.data(),
-                    sample_displs.data(),
-                    sizeof(augmented_type));
-
-    // ========================================================================
-    // Phase 5: Select p-1 pivots from gathered samples
-    // ========================================================================
-    // Sort all samples by the stable comparator
-    std::sort(all_samples.begin(), all_samples.end(), stable_comp);
-
-    // Pick p-1 pivots
-    std::vector<augmented_type> pivots;
-    pivots.reserve(static_cast<size_type>(num_ranks - 1));
-    size_type n_samples = all_samples.size();
-    for (rank_t i = 1; i < num_ranks; ++i) {
-        size_type idx = (static_cast<size_type>(i) * n_samples) /
-                        static_cast<size_type>(num_ranks);
-        if (idx >= n_samples) idx = n_samples - 1;
-        pivots.push_back(all_samples[idx]);
-    }
-
-    // ========================================================================
-    // Phase 6: Partition local data into p buckets by pivots
-    // ========================================================================
-    std::vector<std::vector<augmented_type>> buckets(
-        static_cast<size_type>(num_ranks));
-
-    for (const auto& elem : augmented_local) {
-        // Find bucket using stable comparator
-        auto pivot_it = std::lower_bound(
-            pivots.begin(), pivots.end(), elem, stable_comp);
-        rank_t bucket_idx = static_cast<rank_t>(
-            std::distance(pivots.begin(), pivot_it));
-        buckets[static_cast<size_type>(bucket_idx)].push_back(elem);
-    }
-
-    // ========================================================================
-    // Phase 7: Compute alltoallv parameters and exchange counts
-    // ========================================================================
-    std::vector<int> send_counts(static_cast<size_type>(num_ranks));
-    std::vector<int> send_displs(static_cast<size_type>(num_ranks));
+    int my_count = static_cast<int>(augmented_local.size());
     std::vector<int> recv_counts(static_cast<size_type>(num_ranks), 0);
+    comm.allgather(&my_count, recv_counts.data(), sizeof(int));
+
     std::vector<int> recv_displs(static_cast<size_type>(num_ranks), 0);
-
-    int disp = 0;
-    for (size_type i = 0; i < static_cast<size_type>(num_ranks); ++i) {
-        send_counts[i] = static_cast<int>(buckets[i].size());
-        send_displs[i] = disp;
-        disp += send_counts[i];
-    }
-
-    // Exchange counts
-    comm.alltoall(send_counts.data(), recv_counts.data(), sizeof(int));
-
-    // Compute receive displacements
     std::exclusive_scan(recv_counts.begin(), recv_counts.end(),
                         recv_displs.begin(), 0);
-    size_type total_recv = static_cast<size_type>(
-        recv_displs.back() + recv_counts.back());
 
-    // ========================================================================
-    // Phase 8: Flatten buckets and exchange data
-    // ========================================================================
-    // Flatten send buffer
-    std::vector<augmented_type> send_buffer;
-    send_buffer.reserve(augmented_local.size());
-    for (const auto& bucket : buckets) {
-        send_buffer.insert(send_buffer.end(), bucket.begin(), bucket.end());
-    }
+    const size_type global_count = recv_counts.empty()
+        ? 0
+        : static_cast<size_type>(recv_displs.back() + recv_counts.back());
+    std::vector<augmented_type> global_augmented(global_count);
+    comm.allgatherv(augmented_local.data(),
+                    static_cast<size_type>(my_count),
+                    global_augmented.data(),
+                    recv_counts.data(),
+                    recv_displs.data(),
+                    sizeof(augmented_type));
 
-    std::vector<augmented_type> recv_buffer(total_recv);
-
-    result.elements_sent = send_buffer.size();
-    result.elements_received = total_recv;
-
-    comm.alltoallv(send_buffer.data(),
-                   send_counts.data(), send_displs.data(),
-                   recv_buffer.data(),
-                   recv_counts.data(), recv_displs.data(),
-                   sizeof(augmented_type));
-
-    // ========================================================================
-    // Phase 9: Final stable sort of received data
-    // ========================================================================
     if constexpr (is_par_policy_v<ExecutionPolicy>) {
         std::stable_sort(std::execution::par,
-                         recv_buffer.begin(), recv_buffer.end(),
+                         global_augmented.begin(), global_augmented.end(),
                          stable_comp);
     } else {
-        std::stable_sort(recv_buffer.begin(), recv_buffer.end(),
+        std::stable_sort(global_augmented.begin(), global_augmented.end(),
                          stable_comp);
     }
 
-    // ========================================================================
-    // Phase 10: Extract values and write back to container
-    // ========================================================================
-    auto out_view = container.local_view();
-    size_type copy_count = std::min(total_recv,
-                                     static_cast<size_type>(out_view.size()));
+    result.elements_sent = augmented_local.size();
+    result.elements_received = global_count;
 
-    for (size_type i = 0; i < copy_count; ++i) {
-        out_view[i] = recv_buffer[i].value;
+    std::vector<value_type> sorted_values;
+    sorted_values.reserve(global_augmented.size());
+    for (auto& elem : global_augmented) {
+        sorted_values.push_back(std::move(elem.value));
     }
+
+    auto out_view = container.local_view();
+    detail::restore_sorted_sequence_to_original_partition(
+        comm, sorted_values, out_view);
 
     return result;
 }

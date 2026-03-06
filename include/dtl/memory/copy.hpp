@@ -28,6 +28,8 @@
 #include <stdexcept>
 #include <string>
 
+#include <dtl/memory/pointer_utils.hpp>
+
 namespace dtl {
 
 // ============================================================================
@@ -63,6 +65,53 @@ struct copy_result {
     }
 };
 
+namespace detail {
+
+[[nodiscard]] inline bool is_plain_host_pointer_kind(pointer_kind kind) noexcept {
+    return kind == pointer_kind::host ||
+           kind == pointer_kind::unregistered ||
+           kind == pointer_kind::unknown;
+}
+
+[[nodiscard]] inline copy_result memcpy_copy_result(size_type bytes) noexcept {
+    return {.success = true, .bytes_copied = bytes, .error_code = 0};
+}
+
+#if DTL_ENABLE_CUDA
+[[nodiscard]] inline copy_result dispatch_cuda_copy(
+    void* dst,
+    const void* src,
+    size_type bytes,
+    int device_id = -1) {
+    if (bytes == 0) {
+        return memcpy_copy_result(0);
+    }
+
+    const auto src_kind = query_pointer_kind(src);
+    const auto dst_kind = query_pointer_kind(dst);
+    if (is_plain_host_pointer_kind(src_kind) && is_plain_host_pointer_kind(dst_kind)) {
+        std::memcpy(dst, src, bytes);
+        return memcpy_copy_result(bytes);
+    }
+
+    cudaError_t err;
+    if (device_id >= 0) {
+        cuda::device_guard guard(device_id);
+        err = cudaMemcpy(dst, src, bytes, cudaMemcpyDefault);
+    } else {
+        err = cudaMemcpy(dst, src, bytes, cudaMemcpyDefault);
+    }
+
+    return {
+        .success = (err == cudaSuccess),
+        .bytes_copied = (err == cudaSuccess) ? bytes : 0,
+        .error_code = static_cast<int>(err)
+    };
+}
+#endif
+
+}  // namespace detail
+
 // ============================================================================
 // Synchronous Copy Operations
 // ============================================================================
@@ -83,16 +132,12 @@ template <typename T>
     }
 
 #if DTL_ENABLE_CUDA
-    cudaError_t err;
-    if (device_id >= 0) {
-        cuda::device_guard guard(device_id);
-        err = cudaMemcpy(result.data(), device_data, count * sizeof(T), cudaMemcpyDeviceToHost);
-    } else {
-        err = cudaMemcpy(result.data(), device_data, count * sizeof(T), cudaMemcpyDeviceToHost);
-    }
-    if (err != cudaSuccess) {
+    auto copy = detail::dispatch_cuda_copy(
+        result.data(), device_data, count * sizeof(T), device_id);
+    if (!copy.success) {
         throw std::runtime_error(
-            std::string("copy_to_host failed: ") + cudaGetErrorString(err));
+            std::string("copy_to_host failed: ") +
+            cudaGetErrorString(static_cast<cudaError_t>(copy.error_code)));
     }
 #else
     // Without CUDA, assume it's host memory
@@ -124,25 +169,15 @@ template <typename T>
 copy_result copy_from_host(const T* host_data, T* device_data, size_type count,
                            int device_id = -1) {
     if (count == 0) {
-        return {.success = true, .bytes_copied = 0};
+        return detail::memcpy_copy_result(0);
     }
 
 #if DTL_ENABLE_CUDA
-    cudaError_t err;
-    if (device_id >= 0) {
-        cuda::device_guard guard(device_id);
-        err = cudaMemcpy(device_data, host_data, count * sizeof(T), cudaMemcpyHostToDevice);
-    } else {
-        err = cudaMemcpy(device_data, host_data, count * sizeof(T), cudaMemcpyHostToDevice);
-    }
-    return {
-        .success = (err == cudaSuccess),
-        .bytes_copied = (err == cudaSuccess) ? count * sizeof(T) : 0,
-        .error_code = static_cast<int>(err)
-    };
+    return detail::dispatch_cuda_copy(
+        device_data, host_data, count * sizeof(T), device_id);
 #else
     std::memcpy(device_data, host_data, count * sizeof(T));
-    return {.success = true, .bytes_copied = count * sizeof(T)};
+    return detail::memcpy_copy_result(count * sizeof(T));
 #endif
 }
 
@@ -181,25 +216,15 @@ template <typename T>
 copy_result copy_device_to_device(const T* src_data, T* dst_data, size_type count,
                                    int device_id = -1) {
     if (count == 0) {
-        return {.success = true, .bytes_copied = 0};
+        return detail::memcpy_copy_result(0);
     }
 
 #if DTL_ENABLE_CUDA
-    cudaError_t err;
-    if (device_id >= 0) {
-        cuda::device_guard guard(device_id);
-        err = cudaMemcpy(dst_data, src_data, count * sizeof(T), cudaMemcpyDeviceToDevice);
-    } else {
-        err = cudaMemcpy(dst_data, src_data, count * sizeof(T), cudaMemcpyDeviceToDevice);
-    }
-    return {
-        .success = (err == cudaSuccess),
-        .bytes_copied = (err == cudaSuccess) ? count * sizeof(T) : 0,
-        .error_code = static_cast<int>(err)
-    };
+    return detail::dispatch_cuda_copy(
+        dst_data, src_data, count * sizeof(T), device_id);
 #else
     std::memcpy(dst_data, src_data, count * sizeof(T));
-    return {.success = true, .bytes_copied = count * sizeof(T)};
+    return detail::memcpy_copy_result(count * sizeof(T));
 #endif
 }
 

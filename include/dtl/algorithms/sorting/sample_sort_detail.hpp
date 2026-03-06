@@ -176,4 +176,40 @@ std::vector<T> flatten_buckets(const std::vector<std::vector<T>>& buckets) {
     return flat;
 }
 
+/// @brief Restore a globally sorted sequence to the container's original block
+///        partition after a redistribution phase.
+template <typename Comm, typename T, typename LocalView>
+void restore_sorted_sequence_to_original_partition(
+    Comm& comm,
+    const std::vector<T>& local_sorted_segment,
+    LocalView out_view) {
+    int my_count = static_cast<int>(local_sorted_segment.size());
+    std::vector<int> recv_counts(static_cast<size_type>(comm.size()), 0);
+    comm.allgather(&my_count, recv_counts.data(), sizeof(int));
+
+    std::vector<int> recv_displs(static_cast<size_type>(comm.size()), 0);
+    std::exclusive_scan(recv_counts.begin(), recv_counts.end(),
+                        recv_displs.begin(), 0);
+
+    size_type total_recv = recv_counts.empty()
+        ? 0
+        : static_cast<size_type>(recv_displs.back() + recv_counts.back());
+    if (total_recv == 0) {
+        return;
+    }
+
+    std::vector<T> global_sorted(total_recv);
+    comm.allgatherv(local_sorted_segment.data(),
+                    static_cast<size_type>(my_count),
+                    global_sorted.data(),
+                    recv_counts.data(),
+                    recv_displs.data(),
+                    sizeof(T));
+
+    const auto global_offset = static_cast<size_type>(out_view.global_offset());
+    for (size_type i = 0; i < static_cast<size_type>(out_view.size()); ++i) {
+        out_view[i] = std::move(global_sorted[global_offset + i]);
+    }
+}
+
 }  // namespace dtl::detail

@@ -154,109 +154,39 @@ distributed_sort_result sort(ExecutionPolicy&& policy,
     }
 
     // ========================================================================
-    // Phase 2: Sample local data
+    // Correctness-first fallback: gather the globally distributed sequence,
+    // sort it on every rank, then restore the original block partition.
+    // This preserves container metadata and avoids relying on the incomplete
+    // redistribution/write-back contract.
     // ========================================================================
-    // Take oversampling_factor * num_ranks samples for good pivot quality
-    size_type samples_per_rank = std::max(
-        static_cast<size_type>(1),
-        std::min(local_size, static_cast<size_type>(3 * num_ranks)));
+    int my_count = static_cast<int>(local_size);
+    std::vector<int> recv_counts(static_cast<size_type>(num_ranks), 0);
+    comm.allgather(&my_count, recv_counts.data(), sizeof(int));
 
-    auto local_samples = detail::sample_local(
-        local_v.begin(), local_v.end(), samples_per_rank, comp);
+    std::vector<int> recv_displs(static_cast<size_type>(num_ranks), 0);
+    std::exclusive_scan(recv_counts.begin(), recv_counts.end(),
+                        recv_displs.begin(), 0);
 
-    // ========================================================================
-    // Phase 3: Allgather samples to all ranks
-    // ========================================================================
-    // Gather sample counts first (may vary per rank)
-    int my_sample_count = static_cast<int>(local_samples.size());
-    std::vector<int> sample_counts(static_cast<size_type>(num_ranks));
-    comm.allgather(&my_sample_count, sample_counts.data(), sizeof(int));
-
-    // Compute displacements
-    std::vector<int> sample_displs(static_cast<size_type>(num_ranks));
-    std::exclusive_scan(sample_counts.begin(), sample_counts.end(),
-                        sample_displs.begin(), 0);
-
-    size_type total_samples = static_cast<size_type>(
-        sample_displs.back() + sample_counts.back());
-
-    // Allgather the actual samples
-    std::vector<value_type> all_samples(total_samples);
-    comm.allgatherv(local_samples.data(), static_cast<size_type>(my_sample_count),
-                    all_samples.data(), sample_counts.data(), sample_displs.data(),
+    const size_type global_count = recv_counts.empty()
+        ? 0
+        : static_cast<size_type>(recv_displs.back() + recv_counts.back());
+    std::vector<value_type> global_values(global_count);
+    comm.allgatherv(local_v.begin(), local_size,
+                    global_values.data(), recv_counts.data(), recv_displs.data(),
                     sizeof(value_type));
 
-    // ========================================================================
-    // Phase 4: Select p-1 pivots from gathered samples
-    // ========================================================================
-    auto pivots = detail::select_pivots(all_samples, num_ranks, comp);
-
-    // ========================================================================
-    // Phase 5: Partition local data into p buckets by pivots
-    // ========================================================================
-    auto buckets = detail::partition_by_pivots(
-        local_v.begin(), local_v.end(), pivots, comp);
-
-    // ========================================================================
-    // Phase 6: Compute alltoallv parameters and exchange counts
-    // ========================================================================
-    auto params = detail::compute_alltoallv_params(buckets);
-
-    // Exchange send_counts to get recv_counts via alltoall
-    comm.alltoall(params.send_counts.data(), params.recv_counts.data(), sizeof(int));
-
-    // Compute receive displacements
-    std::exclusive_scan(params.recv_counts.begin(), params.recv_counts.end(),
-                        params.recv_displs.begin(), 0);
-    params.total_recv = static_cast<size_type>(
-        params.recv_displs.back() + params.recv_counts.back());
-
-    // ========================================================================
-    // Phase 7: Flatten buckets and exchange data via alltoallv
-    // ========================================================================
-    auto send_buffer = detail::flatten_buckets(buckets);
-    std::vector<value_type> recv_buffer(params.total_recv);
-
-    result.elements_sent = send_buffer.size();
-    result.elements_received = params.total_recv;
-
-    comm.alltoallv(send_buffer.data(), params.send_counts.data(), params.send_displs.data(),
-                   recv_buffer.data(), params.recv_counts.data(), params.recv_displs.data(),
-                   sizeof(value_type));
-
-    // ========================================================================
-    // Phase 8: Merge received sorted chunks
-    // ========================================================================
-    // Each received chunk from each rank is already sorted.
-    // We need to merge them into final sorted order.
-
-    // Approach 1: k-way merge (optimal but complex)
-    // Approach 2: Simple re-sort (simpler, still efficient for small p)
-    // Using approach 2 for now, which is O((n/p) log(n/p))
-
     if constexpr (is_par_policy_v<ExecutionPolicy>) {
-        std::sort(std::execution::par, recv_buffer.begin(), recv_buffer.end(), comp);
+        std::sort(std::execution::par, global_values.begin(), global_values.end(), comp);
     } else {
-        std::sort(recv_buffer.begin(), recv_buffer.end(), comp);
+        std::sort(global_values.begin(), global_values.end(), comp);
     }
 
-    // ========================================================================
-    // Update container with sorted data (structural contract)
-    // ========================================================================
-    if constexpr (requires(Container& c, typename Container::storage_type data) {
-                      c.replace_local_partition(std::move(data));
-                  }) {
-        typename Container::storage_type new_local_data(
-            recv_buffer.begin(), recv_buffer.end());
-        auto apply_result = container.replace_local_partition(std::move(new_local_data));
-        if (!apply_result) {
-            result.success = false;
-            return result;
-        }
-    } else {
-        result.success = false;
-        return result;
-    }
+    result.elements_sent = local_size;
+    result.elements_received = global_count;
+
+    auto out_view = container.local_view();
+    detail::restore_sorted_sequence_to_original_partition(
+        comm, global_values, out_view);
 
     return result;
 }

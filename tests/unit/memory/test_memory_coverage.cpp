@@ -212,7 +212,6 @@ TEST(AllocatorTraitsExtTest, MemorySpaceAllocatorTraits) {
 // =============================================================================
 
 TEST(CopyTest, CopyToHostFromHostMemory) {
-    // Without CUDA, copy_to_host uses memcpy
     std::vector<int> src = {1, 2, 3, 4, 5};
     auto result = copy_to_host(src.data(), size_type{5});
     ASSERT_EQ(result.size(), 5u);
@@ -247,7 +246,6 @@ TEST(CopyTest, CopyFromHostZeroCount) {
 }
 
 TEST(CopyTest, CopyDeviceToDevice) {
-    // Without CUDA, this uses memcpy
     std::vector<double> src = {1.1, 2.2, 3.3};
     std::vector<double> dst(3, 0.0);
     auto res = copy_device_to_device(src.data(), dst.data(), size_type{3});
@@ -277,10 +275,11 @@ TEST(CopyTest, CopyDirectionTags) {
 // =============================================================================
 
 TEST(PointerUtilsTest, QueryHostPointerKind) {
-    // Without CUDA, query_pointer_kind returns unknown for any pointer
     int x = 42;
     auto kind = query_pointer_kind(&x);
-    EXPECT_EQ(kind, pointer_kind::unknown);
+    EXPECT_TRUE(kind == pointer_kind::host ||
+                kind == pointer_kind::unregistered ||
+                kind == pointer_kind::unknown);
 }
 
 TEST(PointerUtilsTest, QueryNullPointer) {
@@ -290,7 +289,6 @@ TEST(PointerUtilsTest, QueryNullPointer) {
 
 TEST(PointerUtilsTest, IsHostAccessible) {
     int x = 0;
-    // Without CUDA, host pointers return unknown, which is host-accessible
     EXPECT_TRUE(is_host_accessible(&x));
 }
 
