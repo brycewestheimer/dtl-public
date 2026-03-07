@@ -240,6 +240,11 @@ inline int world_size() {
     if (!initialized) {
         return 1;
     }
+    int finalized = 0;
+    MPI_Finalized(&finalized);
+    if (finalized) {
+        return 1;
+    }
     int size = 1;
     MPI_Comm_size(MPI_COMM_WORLD, &size);
     return size;
@@ -258,6 +263,11 @@ inline int world_rank() {
     int initialized = 0;
     MPI_Initialized(&initialized);
     if (!initialized) {
+        return 0;
+    }
+    int finalized = 0;
+    MPI_Finalized(&finalized);
+    if (finalized) {
         return 0;
     }
     int rank = 0;

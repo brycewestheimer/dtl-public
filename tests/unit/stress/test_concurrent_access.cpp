@@ -49,7 +49,8 @@ TEST(ConcurrentAccessTest, RapidCreateDestroyFromMultipleThreads) {
         threads.emplace_back([t, iterations_per_thread]() {
             for (int i = 0; i < iterations_per_thread; ++i) {
                 // Each thread creates its own independent container
-                distributed_vector<int> vec(1000 + t * 100, t * iterations_per_thread + i);
+                distributed_vector<int> vec(static_cast<size_type>(1000 + t * 100),
+                                            t * iterations_per_thread + i);
                 auto local = vec.local_view();
                 EXPECT_EQ(local.size(), static_cast<size_type>(1000 + t * 100));
                 EXPECT_EQ(local[0], t * iterations_per_thread + i);
@@ -77,7 +78,8 @@ TEST(ConcurrentAccessTest, IndependentContainerOperationsFromMultipleThreads) {
             auto fill_res = dtl::fill(seq{}, vec, static_cast<int64_t>(t + 1));
             ASSERT_TRUE(fill_res.has_value());
 
-            results[t] = dtl::reduce(seq{}, vec, int64_t{0}, std::plus<>{});
+            results[static_cast<size_t>(t)] =
+                dtl::reduce(seq{}, vec, int64_t{0}, std::plus<>{});
         });
     }
 
@@ -87,7 +89,8 @@ TEST(ConcurrentAccessTest, IndependentContainerOperationsFromMultipleThreads) {
 
     // Verify each thread got the right answer
     for (int t = 0; t < num_threads; ++t) {
-        EXPECT_EQ(results[t], static_cast<int64_t>((t + 1) * N))
+        EXPECT_EQ(results[static_cast<size_t>(t)],
+                  static_cast<int64_t>(t + 1) * static_cast<int64_t>(N))
             << "Thread " << t << " got wrong result";
     }
 }
@@ -109,7 +112,7 @@ TEST(MemoryPressureTest, ManySmallContainersAlive) {
 
     // Verify all containers are still valid
     for (int i = 0; i < count; ++i) {
-        auto local = containers[i]->local_view();
+        auto local = containers[static_cast<size_t>(i)]->local_view();
         ASSERT_EQ(local.size(), 100u) << "Container " << i;
         EXPECT_EQ(local[0], i) << "Container " << i;
         EXPECT_EQ(local[99], i) << "Container " << i;

@@ -190,7 +190,9 @@ public:
         MPI_Comm_rank(comm_, &rank);
 
         // Node leaders have local rank 0
-        int color = (info_.rank_to_local[rank] == 0) ? 0 : MPI_UNDEFINED;
+        int color = (info_.rank_to_local[static_cast<size_type>(rank)] == 0)
+                        ? 0
+                        : MPI_UNDEFINED;
 
         MPI_Comm leader_comm;
         int result = MPI_Comm_split(comm_, color, rank, &leader_comm);
@@ -241,20 +243,22 @@ private:
         char processor_name[MPI_MAX_PROCESSOR_NAME];
         int name_len;
         MPI_Get_processor_name(processor_name, &name_len);
-        std::string my_hostname(processor_name, name_len);
+        std::string my_hostname(processor_name, static_cast<size_t>(name_len));
 
         // Gather all hostnames
-        std::vector<char> all_names(size * MPI_MAX_PROCESSOR_NAME);
+        auto usize = static_cast<size_type>(size);
+        std::vector<char> all_names(usize * MPI_MAX_PROCESSOR_NAME);
         MPI_Allgather(processor_name, MPI_MAX_PROCESSOR_NAME, MPI_CHAR,
                       all_names.data(), MPI_MAX_PROCESSOR_NAME, MPI_CHAR, comm_);
 
         // Build node map
         std::unordered_map<std::string, size_type> hostname_to_node;
-        info_.rank_to_node.resize(size);
-        info_.rank_to_local.resize(size);
+        info_.rank_to_node.resize(usize);
+        info_.rank_to_local.resize(usize);
 
         for (rank_t r = 0; r < size; ++r) {
-            std::string hostname(&all_names[r * MPI_MAX_PROCESSOR_NAME]);
+            auto ru = static_cast<size_type>(r);
+            std::string hostname(&all_names[ru * MPI_MAX_PROCESSOR_NAME]);
 
             auto it = hostname_to_node.find(hostname);
             if (it == hostname_to_node.end()) {
@@ -268,15 +272,15 @@ private:
                 ni.local_ranks.push_back(r);
                 info_.nodes.push_back(std::move(ni));
 
-                info_.rank_to_node[r] = node_idx;
-                info_.rank_to_local[r] = 0;
+                info_.rank_to_node[ru] = node_idx;
+                info_.rank_to_local[ru] = 0;
             } else {
                 // Existing node
                 size_type node_idx = it->second;
-                info_.rank_to_local[r] = static_cast<rank_t>(
+                info_.rank_to_local[ru] = static_cast<rank_t>(
                     info_.nodes[node_idx].local_ranks.size());
                 info_.nodes[node_idx].local_ranks.push_back(r);
-                info_.rank_to_node[r] = node_idx;
+                info_.rank_to_node[ru] = node_idx;
             }
         }
 

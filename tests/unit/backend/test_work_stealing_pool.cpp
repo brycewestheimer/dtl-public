@@ -128,7 +128,7 @@ TEST(WorkStealingPoolTest, MultipleTasksCorrectness) {
     }
 
     for (int i = 0; i < N; ++i) {
-        EXPECT_EQ(futures[i].get(), i * i);
+        EXPECT_EQ(futures[static_cast<size_t>(i)].get(), i * i);
     }
 }
 

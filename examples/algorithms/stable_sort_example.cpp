@@ -184,7 +184,8 @@ int main(int argc, char** argv) {
     }
 
     // Stable sort descending
-    auto desc_result = dtl::stable_sort_global(dtl::seq{}, vec2, std::greater<>{}, comm);
+    [[maybe_unused]] auto desc_result =
+        dtl::stable_sort_global(dtl::seq{}, vec2, std::greater<>{}, comm);
 
     comm.barrier();
 

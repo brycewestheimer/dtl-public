@@ -16,6 +16,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -24,8 +29,7 @@ jobs:
             ninja-build \
             gcc-13 g++-13 \
             libgtest-dev \
-            lcov \
-            python3-pip
+            lcov
           python3 -m pip install --upgrade pip
           python3 -m pip install gcovr
 

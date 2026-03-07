@@ -32,6 +32,14 @@ namespace dtl::test {
 
 namespace {
 
+struct test_context {
+    rank_t my_rank = 0;
+    rank_t num_ranks = 1;
+
+    [[nodiscard]] rank_t rank() const noexcept { return my_rank; }
+    [[nodiscard]] rank_t size() const noexcept { return num_ranks; }
+};
+
 template <typename Container>
 concept has_local_view = requires(Container& container) {
     container.local_view();
@@ -236,7 +244,7 @@ TEST_F(CudaPlacementTest, DistributedVectorDeviceOnlyAllocatesOnDevice) {
     >);
 
     // Create vector
-    vec_t vec(1000, 1, 0);  // 1000 elements, 1 rank, rank 0
+    vec_t vec(1000, test_context{0, 1});  // 1000 elements, 1 rank, rank 0
 
     // Verify placement policy properties
     EXPECT_FALSE(vec_t::is_host_accessible());
@@ -280,7 +288,7 @@ TEST_F(CudaPlacementTest, DistributedVectorUnifiedMemoryAllocatesManaged) {
     >);
 
     // Create vector
-    vec_t vec(1000, 1, 0);
+    vec_t vec(1000, test_context{0, 1});
 
     // Verify placement policy properties
     EXPECT_TRUE(vec_t::is_host_accessible());
@@ -303,7 +311,7 @@ TEST_F(CudaPlacementTest, DistributedVectorUnifiedMemoryAllocatesManaged) {
 TEST_F(CudaPlacementTest, DeviceOnlyGlobalViewDoesNotExposeHostFastPath) {
     using vec_t = distributed_vector<int, device_only<0>>;
 
-    vec_t vec(16, 1, 0);
+    vec_t vec(16, test_context{0, 1});
     auto global = vec.global_view();
     auto ref = global[0];
 
@@ -396,7 +404,7 @@ TEST_F(CudaPlacementTest, DistributedArrayDeviceOnlyExposesDeviceViewOnly) {
 TEST_F(CudaPlacementTest, UnifiedMemoryAccessibleFromHost) {
     using vec_t = distributed_vector<int, unified_memory>;
 
-    vec_t vec(100, 1, 0);
+    vec_t vec(100, test_context{0, 1});
     auto local = vec.local_view();
 
     // Should be able to write from host
@@ -522,7 +530,7 @@ TEST(HostPlacementTest, DistributedVectorHostOnlyAllocatesOnHost) {
     >);
 
     // Create vector
-    vec_t vec(1000, 1, 0);
+    vec_t vec(1000, test_context{0, 1});
 
     // Verify placement policy properties
     EXPECT_TRUE(vec_t::is_host_accessible());
@@ -541,7 +549,7 @@ TEST(HostPlacementTest, DistributedVectorHostOnlyAllocatesOnHost) {
 
 TEST(HostPlacementTest, DefaultPlacementIsHostAccessible) {
     // Default distributed_vector with no placement policy specified
-    distributed_vector<int> vec(100, 1, 0);
+    distributed_vector<int> vec(100, test_context{0, 1});
 
     // Default should be host_only
     using default_vec_t = distributed_vector<int>;
@@ -576,8 +584,8 @@ TEST_F(CudaMultiDevicePlacementTest, DeviceOnly0And1AllocateOnDifferentDevices) 
     int original_device = cuda::current_device_id();
 
     // Create vectors on different devices
-    vec0_t vec0(1000, 1, 0);
-    vec1_t vec1(1000, 1, 0);
+    vec0_t vec0(1000, test_context{0, 1});
+    vec1_t vec1(1000, test_context{0, 1});
 
     // Verify device affinity
     EXPECT_EQ(vec0.device_id(), 0);
@@ -604,11 +612,11 @@ TEST_F(CudaMultiDevicePlacementTest, AllocationDoesNotChangeCallerDevice) {
     EXPECT_EQ(cuda::current_device_id(), 1);
 
     // Allocate on device 0
-    vec0_t vec0(1000, 1, 0);
+    vec0_t vec0(1000, test_context{0, 1});
     EXPECT_EQ(cuda::current_device_id(), 1);  // Should still be on device 1
 
     // Allocate on device 1
-    vec1_t vec1(1000, 1, 0);
+    vec1_t vec1(1000, test_context{0, 1});
     EXPECT_EQ(cuda::current_device_id(), 1);  // Should still be on device 1
 
     // Verify allocations are correct
@@ -630,10 +638,10 @@ TEST_F(CudaMultiDevicePlacementTest, InterleavedAllocationsAndDeallocations) {
 
     for (int i = 0; i < 5; ++i) {
         {
-            vec0_t v0(500, 1, 0);
+            vec0_t v0(500, test_context{0, 1});
             EXPECT_EQ(cuda::current_device_id(), original);
 
-            vec1_t v1(500, 1, 0);
+            vec1_t v1(500, test_context{0, 1});
             EXPECT_EQ(cuda::current_device_id(), original);
 
             // Verify allocations
@@ -657,7 +665,7 @@ TEST_F(CudaMultiDevicePlacementTest, DeallocationRestoresDevice) {
     EXPECT_EQ(cuda::current_device_id(), 0);
 
     {
-        vec1_t vec(1000, 1, 0);  // Allocates on device 1
+        vec1_t vec(1000, test_context{0, 1});  // Allocates on device 1
         EXPECT_EQ(cuda::current_device_id(), 0);  // Restored after allocation
     }
     // Destructor deallocates on device 1, then restores to 0
@@ -692,14 +700,14 @@ TEST_F(CudaMultiDevicePlacementTest, DeviceGuardRestoresUnderMultipleNesting) {
         EXPECT_EQ(cuda::current_device_id(), 1);
 
         // Allocate a container while on device 1
-        distributed_vector<float, device_only<0>> vec0(100, 1, 0);
+        distributed_vector<float, device_only<0>> vec0(100, test_context{0, 1});
         EXPECT_EQ(cuda::current_device_id(), 1);  // Guard should restore to 1
 
         {
             cuda::device_guard g2(0);
             EXPECT_EQ(cuda::current_device_id(), 0);
 
-            distributed_vector<float, device_only<1>> vec1(100, 1, 0);
+            distributed_vector<float, device_only<1>> vec1(100, test_context{0, 1});
             EXPECT_EQ(cuda::current_device_id(), 0);  // Guard should restore to 0
         }
         EXPECT_EQ(cuda::current_device_id(), 1);  // g2 destroyed, back to 1
